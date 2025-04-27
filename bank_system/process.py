@@ -1,4 +1,3 @@
-
 from typing import Any
 from socket import socket, AF_INET, SOCK_STREAM
 from time import sleep
@@ -59,10 +58,10 @@ class Process:
 
         for action in self.actions:
             sleep(action.delay)
-            print(f"Sending {action.amount} to {action.to.address}: {action.to.port}")
-            self.send_message(message=action, message_to=action.to)
+            print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
+            self.send_message(message=action, message_to=action.to) # action should inherit message (in config.py)
 
-    def send_message(self, message: Action, message_to: ProcessAddress) -> bool:
+    def send_message(self, message: Message, message_to: ProcessAddress) -> bool:
         """Send a message to `message_to`."""
         if message_to not in self.connections or self.connections[message_to] is None:
             print(f"No connection to {message_to.address}:{message_to.port}") # Assuming Full Mesh
@@ -71,13 +70,14 @@ class Process:
         try:
             sock = self.connections[message_to]
             sock.sendall(message.serialise().encode('utf-8'))
+            # Pause to make demonstrating dropped messages during crashes easier
+            sleep(1)
             return True
         except Exception as e:
             print(f"Failed to send message to {message_to.address}:{message_to.port} - {e}")
             return False
 
-        # Pause to make demonsting dropped messages during crashes easier
-        sleep(1)
+
 
     def handle_receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
         """Handles received a message from any other process.
