@@ -2,6 +2,7 @@
 from typing import Any
 from socket import socket
 from time import sleep
+from collections import defaultdict
 
 from .message import Message
 from .config import Config, ProcessAddress, Action
@@ -31,6 +32,14 @@ class Process:
     incoming_socket: socket
     actions: list[Action]
 
+    # From Venkatesan algorithm
+    version: int
+    Uq: list[ProcessAddress]
+    p_state: Any
+    state: defaultdict[ProcessAddress, set]
+    link_states: set[Any]
+    loc_snap: list[Any]
+
     def __init__(self, config: Config, identifier: ProcessAddress):
         self.port = identifier.port
         self.primary = config.processes[identifier].primary
@@ -42,6 +51,11 @@ class Process:
         for connection in config.processes[identifier].connections:
             # Initialise the connection in the dict as none, connect later when we start()
             self.connections[connection] = None
+
+        self.version = 0
+        self.link_states = set()
+        self.Uq = config.processes[identifier].connections
+        self.states = defaultdict(set)
 
     def start(self):
         """Start the process.
