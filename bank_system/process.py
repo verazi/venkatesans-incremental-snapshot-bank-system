@@ -3,10 +3,26 @@ from typing import Any
 from socket import socket
 from time import sleep
 from collections import defaultdict
+from dataclasses import dataclass
 
 from .message import Message
 from .config import Config, ProcessAddress, Action
 from .control_message import ControlMessage
+
+@dataclass
+class State:
+    """The current state of the process.
+
+    Attributes
+    ----------
+    money : int
+        The amount of money the process has available.
+    next_action : int | None
+        The next action to be performed.
+    """
+
+    money: int
+    next_action: int | None
 
 class Process:
     """A process that can connect to and send messages to other processes.
@@ -24,6 +40,17 @@ class Process:
 
     connections : dict[ProcessAddress, Any]
         All processes this process is directly connected to. TODO: the type
+
+
+
+    version : int
+        The version number of the current snapshot.
+    Uq : list[ProcessAddress]
+        List of neighbours messages have been sent to since the last snapshot completed.
+    p_state : set[State]
+        Saved (cached) states of the local process.
+    state : defaultdict[ProcessAddress, set[State]]
+        
     """
 
     primary: bool
@@ -31,14 +58,16 @@ class Process:
     connections: dict[ProcessAddress, Any]
     incoming_socket: socket
     actions: list[Action]
+    process_state: int
 
     # From Venkatesan algorithm
     version: int
     Uq: list[ProcessAddress]
-    p_state: Any
-    state: defaultdict[ProcessAddress, set]
-    link_states: set[Any]
-    loc_snap: list[Any]
+    p_state: set[State]
+    state: defaultdict[ProcessAddress, set[State]]
+    link_states: set[State]
+    loc_snap: list[set[State]]
+
     record: defaultdict[ProcessAddress, bool]
 
     def __init__(self, config: Config, identifier: ProcessAddress):
@@ -58,6 +87,7 @@ class Process:
         self.Uq = config.processes[identifier].connections
         self.state = defaultdict(set)
         self.record = defaultdict(False)
+        self.loc_snap = []
 
     def start(self):
         """Start the process.
@@ -109,7 +139,7 @@ class Process:
             message
         """
 
-        self.Uq += c # TODO: Maybe record channels as the ProcessAddress of the receiver on the channel
+        self.Uq += c
         self.send_message(m, q)
 
     def receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
@@ -170,7 +200,7 @@ class Process:
         """
 
         if self.version < m.version:
-            self.loc_snap[self.version] = self.p_state[q] + self.link_states
+            self.loc_snap[self.version] = self.p_state[q] + self.link_states # TODO: I don't think this makes sense
 
             self.link_states = set()
             self.p_state[q] = Any # TODO: set to current process state (amount of money)
