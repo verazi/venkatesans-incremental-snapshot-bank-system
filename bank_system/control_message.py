@@ -12,7 +12,7 @@ class ControlMessage(Message):
     """A control message sent as part of taking a snapshot."""
 
     message_type: ControlMessageType
-    current_version: int
+    version: int
 
     def __init__(self, message_type: ControlMessageType, current_version: int):
         self.message_type = message_type

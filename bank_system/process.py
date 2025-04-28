@@ -39,6 +39,7 @@ class Process:
     state: defaultdict[ProcessAddress, set]
     link_states: set[Any]
     loc_snap: list[Any]
+    record: defaultdict[ProcessAddress, bool]
 
     def __init__(self, config: Config, identifier: ProcessAddress):
         self.port = identifier.port
@@ -55,7 +56,8 @@ class Process:
         self.version = 0
         self.link_states = set()
         self.Uq = config.processes[identifier].connections
-        self.states = defaultdict(set)
+        self.state = defaultdict(set)
+        self.record = defaultdict(False)
 
     def start(self):
         """Start the process.
@@ -89,3 +91,110 @@ class Process:
 
         # TODO: STUB
         pass
+
+    # From Venkatesan algorithm
+
+    def send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
+        """Executed when q sends a primary message to r.
+
+        Attributes
+        ----------
+        q : ProcessAddress
+            origin.
+        r : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : Message
+            message
+        """
+
+        self.Uq += c # TODO: Maybe record channels as the ProcessAddress of the receiver on the channel
+        self.send_message(m, q)
+
+    def receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
+        """Executed when a primary message is received.
+
+        Attributes
+        ----------
+        q : ProcessAddress
+            origin.
+        r : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : Message
+            message
+        """
+        if self.record[c]:
+            self.state[c] += m
+        # TODO: Pass m to underlying code (handle message?)
+
+    def receive_marker(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed when q receives a marker from a neighbour.
+
+        Attributes
+        ----------
+        r : ProcessAddress
+            origin.
+        q : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : ControlMessage
+            message
+        """
+
+        if self.version < m.version:
+            # TODO: send init_snap(self.version+1) to self (q)
+            self.state[c] = set()
+
+        self.link_states += self.state[c]
+        self.record[c] = False
+
+        # TODO: send an ack on c
+
+    def receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed when q receives an init_snap message from it's parent.
+
+        Attributes
+        ----------
+        q : ProcessAddress
+            destination
+        r : ProcessAddress
+            parent
+        c : ProcessAddress
+            channel
+        m : ControlMessage
+            message
+        """
+
+        if self.version < m.version:
+            self.loc_snap[self.version] = self.p_state[q] + self.link_states
+
+            self.link_states = set()
+            self.p_state[q] = Any # TODO: set to current process state (amount of money)
+
+            # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
+            self.version = m.version
+
+            for connection in self.connections:
+                self.state[connection] = set()
+                self.record[connection] = True
+
+            for connection in self.Uq:
+                pass # TODO: send marker on connection
+
+            self.Uq = set()
+
+            # TODO: Wait for a snap_completed message on each child
+
+            if self.primary:
+                pass # TODO: Snapshot is complete, save it somehow
+            else:
+                pass # TODO: send a snapshot_completed message to parent
+
+        else:
+            pass # We disgard the init_snap message, already received an init_snap fo this version
+
+
