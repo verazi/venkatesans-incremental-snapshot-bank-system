@@ -4,10 +4,11 @@ from socket import socket
 from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
+from select import select
 
 from .message import Message
 from .config import Config, ProcessAddress, Action
-from .control_message import ControlMessage
+from .control_message import ControlMessage, ControlMessageType
 
 @dataclass
 class State:
@@ -35,13 +36,20 @@ class Process:
     port : int
         The port the process is listening on.
 
-    actions : list[Action]
-        A list of actions the process will take in the system.
-
     connections : dict[ProcessAddress, Any]
         All processes this process is directly connected to. TODO: the type
 
+    incoming_socket : socket
+        Socket connections to receive information on.
 
+    actions : list[Action]
+        A list of actions the process will take in the system.
+
+    process_state : int
+        The current state of this process.
+
+
+    # From Venkatesan algorithm
 
     version : int
         The version number of the current snapshot.
@@ -50,7 +58,11 @@ class Process:
     p_state : set[State]
         Saved (cached) states of the local process.
     state : defaultdict[ProcessAddress, set[State]]
-        
+        The state of the other processes.
+    link_states : set[State] ?
+        Completed channel states for the current snapshot.
+    loc_snap : list[set[State]]
+        the ith global state according to Uq (this process).
     """
 
     primary: bool
@@ -113,14 +125,21 @@ class Process:
         TODO: This will need to handle messages one at a time, not multiple at once. Possibly that
               will be handled wherever this method is called, maybe in start?
         """
-
-        if isinstance(message, ControlMessage):
-            # TODO: Snapshot logic
-            pass
-
-
-        # TODO: STUB
-        pass
+        while True:
+            ready_socks, _, _ = select(self.connections, [], [], 5)
+            for sock in ready_socks:
+                if isinstance(message, ControlMessage):
+                    pass # TODO: Snapshot logic
+                    if message.message_type == ControlMessageType.INIT_SNAP:
+                        self.receive_initiate() # TODO: THIS
+                    elif message.message_type == ControlMessageType.MARKER:
+                        self.receive_marker() # TODO: THIS
+                    elif message.message_type == ControlMessageType.ACK:
+                        pass # TODO: what do we do
+                    elif message.message_type == ControlMessageType.SNAP_COMPLETED:
+                        pass # TODO: what do we do
+                elif isinstance(message, Message): # TODO underlying message type
+                    self.receive_und() # TODO: THIS
 
     # From Venkatesan algorithm
 
@@ -183,6 +202,7 @@ class Process:
         self.record[c] = False
 
         # TODO: send an ack on c
+        #       What is the ack used for?
 
     def receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives an init_snap message from it's parent.
@@ -218,6 +238,8 @@ class Process:
             self.Uq = set()
 
             # TODO: Wait for a snap_completed message on each child
+            #       This bit doesn't make sense for this function, it should be moved to a
+            #       "receive_snap_completed" function.
 
             if self.primary:
                 pass # TODO: Snapshot is complete, save it somehow
