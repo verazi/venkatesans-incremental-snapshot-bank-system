@@ -1,6 +1,5 @@
-
 from typing import Any
-from socket import socket
+from socket import socket, AF_INET, SOCK_STREAM
 from time import sleep
 
 from .message import Message
@@ -36,7 +35,7 @@ class Process:
         self.primary = config.processes[identifier].primary
         self.actions = config.processes[identifier].action_list
 
-        self.incoming_socket = socket()
+        self.incoming_socket = socket(AF_INET, SOCK_STREAM) # TCP over IPv4
 
         self.connections = {}
         for connection in config.processes[identifier].connections:
@@ -48,18 +47,37 @@ class Process:
 
         Open connections to all connected processes. Start sending money to connected processes.
         """
+        for peer_addr in self.connections:
+            try:
+                s = socket(AF_INET, SOCK_STREAM)
+                s.connect((peer_addr.address, peer_addr.port))
+                self.connections[peer_addr] = s
+                print(f"Connected to {peer_addr.address}:{peer_addr.port}")
+            except Exception as e:
+                print(f"Failed to connect to {peer_addr.address}:{peer_addr.port} - {e}")
 
-        # TODO: STUB
-        pass
+        for action in self.actions:
+            sleep(action.delay)
+            print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
+            self.send_message(message=action, message_to=action.to) # action should inherit message (in config.py)
 
     def send_message(self, message: Message, message_to: ProcessAddress) -> bool:
         """Send a message to `message_to`."""
+        if message_to not in self.connections or self.connections[message_to] is None:
+            print(f"No connection to {message_to.address}:{message_to.port}") # Assuming Full Mesh
+            return False
 
-        # TODO: STUB
+        try:
+            sock = self.connections[message_to]
+            sock.sendall(message.serialise().encode('utf-8'))
+            # Pause to make demonstrating dropped messages during crashes easier
+            sleep(1)
+            return True
+        except Exception as e:
+            print(f"Failed to send message to {message_to.address}:{message_to.port} - {e}")
+            return False
 
-        # Pause to make demonsting dropped messages during crashes easier
-        sleep(1)
-        pass
+
 
     def handle_receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
         """Handles received a message from any other process.

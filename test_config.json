@@ -1,0 +1,20 @@
+{
+  "nodes": {
+    "node1": {
+      "primary": false,
+      "initial_balance": 1000,
+      "action_list": [],
+      "connections": [
+        { "address": "127.0.0.1", "port": 8002 }
+      ]
+    },
+    "node2": {
+      "primary": false,
+      "initial_balance": 1000,
+      "action_list": [],
+      "connections": [
+        { "address": "127.0.0.1", "port": 8001 }
+      ]
+    }
+  }
+}

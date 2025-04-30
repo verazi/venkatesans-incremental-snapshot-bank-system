@@ -9,8 +9,8 @@ class Message(ABC):
         """Serialise a message into a json string to be sent over a socket."""
         pass
 
-    @abstractmethod
     @classmethod
+    @abstractmethod
     def deserialise(cls, message_string: str):
         """Deserialise a json string into a Message object."""
         pass
