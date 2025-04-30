@@ -32,8 +32,8 @@ class Process:
     primary : bool
         If the process is the primary process in charge of starting snapshots.
 
-    port : int
-        The port the process is listening on.
+    identifier: ProcessAddress
+        The identifier of the process.
 
     connections : dict[ProcessAddress, Any]
         All processes this process is directly connected to. TODO: the type
@@ -65,7 +65,7 @@ class Process:
     """
 
     primary: bool
-    port: int
+    identifier: ProcessAddress
     connections: dict[ProcessAddress, Any]
     incoming_socket: socket
     actions: list[Action]
@@ -79,10 +79,12 @@ class Process:
     link_states: set[State]
     loc_snap: list[set[State]]
 
+    # My additions
     record: defaultdict[ProcessAddress, bool]
+    parent: ProcessAddress | None
 
     def __init__(self, config: Config, identifier: ProcessAddress):
-        self.port = identifier.port
+        self.identifier = identifier
         self.primary = config.processes[identifier].primary
         self.actions = config.processes[identifier].action_list
 
@@ -99,6 +101,8 @@ class Process:
         self.state = defaultdict(set)
         self.record = defaultdict(False)
         self.loc_snap = []
+
+        self.parent = None
 
     def start(self):
         """Start the process.
@@ -137,30 +141,36 @@ class Process:
 
 
 
-    def handle_receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
+    def receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
         """Handles received a message from any other process.
 
         TODO: This will need to handle messages one at a time, not multiple at once. Possibly that
               will be handled wherever this method is called, maybe in start?
+        # while True:
+        #     ready_socks, _, _ = select(self.connections, [], [], 5)
+        #     for sock in ready_socks:
         """
-        while True:
-            ready_socks, _, _ = select(self.connections, [], [], 5)
-            for sock in ready_socks:
-                if isinstance(message, ControlMessage):
-                    pass # TODO: Snapshot logic
-                    if message.message_type == ControlMessageType.INIT_SNAP:
-                        self.receive_initiate() # TODO: THIS
-                    elif message.message_type == ControlMessageType.MARKER:
-                        self.receive_marker() # TODO: THIS
-                    elif message.message_type == ControlMessageType.ACK:
-                        pass # TODO: what do we do
-                    elif message.message_type == ControlMessageType.SNAP_COMPLETED:
-                        pass # TODO: what do we do
-                elif isinstance(message, Message): # TODO underlying message type
-                    self.receive_und() # TODO: THIS
+
+        if isinstance(message, ControlMessage):
+            if message.message_type == ControlMessageType.INIT_SNAP:
+                self.receive_initiate(self.identifier, message_from, message_from, message)
+            elif message.message_type == ControlMessageType.MARKER:
+                self.receive_marker(message_from, self.identifier, message_from, message)
+            elif message.message_type == ControlMessageType.ACK:
+                pass # TODO: what do we do
+            elif message.message_type == ControlMessageType.SNAP_COMPLETED:
+                pass # TODO: what do we do
+        elif isinstance(message, Message): # TODO underlying message type
+            self.receive_und(message_from, self.identifier, message_from, message)
+
+    def handle_message(self, message: Message, message_from: ProcessAddress):
+        """Handle the logic for receiving an underlying message."""
+        self.process_state += message.amount # TODO: Update variable name and Message type
 
     # From Venkatesan algorithm
 
+    # TODO: c is always one of q or r, should maybe deduplicate? Sticking to the algorithm might
+    #       be easier to read.
     def send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
         """Executed when q sends a primary message to r.
 
@@ -195,7 +205,8 @@ class Process:
         """
         if self.record[c]:
             self.state[c] += m
-        # TODO: Pass m to underlying code (handle message?)
+
+        self.handle_message(m, q)
 
     def receive_marker(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives a marker from a neighbour.
@@ -213,14 +224,15 @@ class Process:
         """
 
         if self.version < m.version:
-            # TODO: send init_snap(self.version+1) to self (q)
+            # Send init_snap(self.version+1) to self (q)
+            self.send_message(ControlMessage(ControlMessageType.INIT_SNAP, self.version + 1), q)
             self.state[c] = set()
 
         self.link_states += self.state[c]
         self.record[c] = False
 
-        # TODO: send an ack on c
-        #       What is the ack used for?
+        # Send an ack on c
+        self.send_message(ControlMessage(ControlMessageType.ACK, m.version), c)
 
     def receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives an init_snap message from it's parent.
@@ -241,7 +253,7 @@ class Process:
             self.loc_snap[self.version] = self.p_state[q] + self.link_states # TODO: I don't think this makes sense
 
             self.link_states = set()
-            self.p_state[q] = Any # TODO: set to current process state (amount of money)
+            self.p_state[q] = State(self.process_state, Any) # TODO: set to current process state (amount of money)
 
             # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
             self.version = m.version
@@ -251,20 +263,24 @@ class Process:
                 self.record[connection] = True
 
             for connection in self.Uq:
-                pass # TODO: send marker on connection
+                # Send marker on connection
+                self.send_message(ControlMessage(ControlMessageType.MARKER, m.version), connection)
 
             self.Uq = set()
 
-            # TODO: Wait for a snap_completed message on each child
-            #       This bit doesn't make sense for this function, it should be moved to a
-            #       "receive_snap_completed" function.
-
-            if self.primary:
-                pass # TODO: Snapshot is complete, save it somehow
-            else:
-                pass # TODO: send a snapshot_completed message to parent
+            # Wait for a snap_completed message on each child
+            self.parent = r
 
         else:
             pass # We disgard the init_snap message, already received an init_snap fo this version
 
+    def receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed when q receives a snap_completed message from it's child."""
 
+        if self.primary:
+            pass # TODO: Snapshot is complete, save it somehow
+        else:
+            if self.parent is not None:
+                # Send a snapshot_completed message to parent
+                self.send_message(ControlMessage(ControlMessageType.SNAP_COMPLETED, m.version), self.parent)
+                self.parent = None
