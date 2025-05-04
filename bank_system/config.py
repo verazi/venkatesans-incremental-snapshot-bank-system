@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-@dataclass
+@dataclass(frozen=True, eq=True)
 class ProcessAddress:
     """The address of a process.
 
@@ -14,6 +14,9 @@ class ProcessAddress:
 
     address: str
     port: int
+
+    def __repr__(self):
+        return f"{self.address}:{self.port}"
 
 @dataclass
 class Action():
@@ -62,6 +65,9 @@ class ProcessConfig:
 class Config:
 
     processes: dict[ProcessAddress, ProcessConfig]
+
+    def __init__(self, processes: dict[ProcessAddress, ProcessConfig]):
+        self.processes = processes
 
     def serialise(self) -> str:
         """Serialise a config into a json string."""

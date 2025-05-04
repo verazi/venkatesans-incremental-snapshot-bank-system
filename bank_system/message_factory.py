@@ -4,5 +4,5 @@ class MessageFactory:
     """A factory for de-serialising messages."""
 
     @staticmethod
-    def deserialise() -> Message:
+    def deserialise(data: str) -> Message:
         pass

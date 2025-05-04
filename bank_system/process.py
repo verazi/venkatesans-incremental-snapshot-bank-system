@@ -1,11 +1,13 @@
-from asyncio.trsock import _RetAddress
 from typing import Any
-from socket import socket, AF_INET, SOCK_STREAM
+from socket import socket, AF_INET, SOCK_STREAM, timeout
 from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
 from select import select
 from threading import Thread, Lock
+from sys import exit
+
+from bank_system.message_factory import MessageFactory
 
 from .initial_connection_message import InitialConnectionMessage
 from .message import Message
@@ -82,7 +84,7 @@ class Process:
 
     # Connection variables
     mutex: Lock
-    addresses: dict[_RetAddress, ProcessAddress]
+    addresses: dict[Any, ProcessAddress] # Any should be _RetAddress
 
 
     # From Venkatesan algorithm
@@ -116,56 +118,78 @@ class Process:
         self.link_states = set()
         self.Uq = config.processes[identifier].connections
         self.state = defaultdict(set)
-        self.record = defaultdict(False)
+        self.record = defaultdict(lambda: False)
         self.loc_snap = []
 
         self.parent = None
+
+    def listen_for_peer_connections(self):
+
+        # Wait for all connections to be made
+        while len(list(filter(lambda con: con is None, self.connections.values()))) > 0:
+            s = socket(AF_INET, SOCK_STREAM)
+            s.bind((self.identifier.address, self.identifier.port))
+
+            print(f"Waiting for {len(list(filter(lambda con: con is None, self.connections.values())))} connections")
+            s.listen(5)
+
+            (client_sock, _address) = s.accept()
+            initial_connection_message = InitialConnectionMessage.deserialise(client_sock.recv(BUFFER_SIZE))
+
+            with self.mutex:
+                self.connections[initial_connection_message.connecting_address] = client_sock
+                self.addresses[_address] = initial_connection_message.connecting_address
+
+        connections = self.connections.__repr__()
+        print(self.identifier, "finished listening for peers", connections)
 
     def start(self):
         """Start the process.
 
         Open connections to all connected processes. Start sending money to connected processes.
         """
+
+        listen_for_peers_thread = Thread(target=self.listen_for_peer_connections)
+        listen_for_peers_thread.start()
+
         for peer_addr in self.connections:
             try:
                 s = socket(AF_INET, SOCK_STREAM)
                 s.connect((peer_addr.address, peer_addr.port))
-                self.connections[peer_addr] = s
 
-                s.send(InitialConnectionMessage(self.identifier).serialise())
-                self.addresses[s.getpeername()] = peer_addr
+                with self.mutex:
+                    self.connections[peer_addr] = s
 
-                print(f"Connected to {peer_addr.address}:{peer_addr.port}")
+                    s.send(InitialConnectionMessage(self.identifier).serialise().encode())
+                    self.addresses[s.getpeername()] = peer_addr
+
+                    print(f"Connected to {peer_addr.address}:{peer_addr.port}")
             except Exception as e:
                 print(f"Failed to connect to {peer_addr.address}:{peer_addr.port} - {e}")
 
-        # Wait for all connections to be made
-        while not all(filter(lambda con: con is None, self.connections)):
-            s = socket(AF_INET, SOCK_STREAM)
-            s.bind((self.identifier.address, self.identifier.port))
-            s.listen(5)
-
-            (client_sock, _address) = s.accept()
-
-            initial_connection_message = InitialConnectionMessage.deserialise(client_sock.recv(BUFFER_SIZE))
-
-            self.connections[initial_connection_message.connecting_address] = client_sock
-            self.addresses[_address] = initial_connection_message.connecting_address
+        listen_for_peers_thread.join()
 
 
         # Send actions in another thread
         action_thread = Thread(target=self.handle_sending_actions)
         action_thread.start()
 
+        print(self.identifier, self.connections)
+
         # Handle incoming connections
         while True:
-            sockets, _, _ = select(self.connections, [], [], 1)
+            sockets, _, _ = select(list(self.connections.values()), [], [], 1)
             for sock in sockets:
                 # This is for type hinting, remove before submission
                 sock: socket
 
-                data, addr = sock.recvfrom(BUFFER_SIZE)
-                # TODO: THIS
+                data = sock.recv(BUFFER_SIZE)
+
+                message = MessageFactory.deserialise(data)
+                message_from = self.addresses[sock.getpeername()]
+
+                with self.mutex:
+                    self.handle_message(message, message_from)
 
 
 
