@@ -4,10 +4,14 @@ from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
 from select import select
+from threading import Thread, Lock
 
+from .initial_connection_message import InitialConnectionMessage
 from .message import Message
 from .config import Config, ProcessAddress, Action
 from .control_message import ControlMessage, ControlMessageType
+
+BUFFER_SIZE = 2048
 
 @dataclass
 class State:
@@ -47,6 +51,10 @@ class Process:
     process_state : int
         The current state of this process.
 
+    mutex : Lock
+        A mutex to stop sending and receiving a message at the same time, possibly causing incorrect
+        behaviour with the systems state.
+
 
     # From Venkatesan algorithm
 
@@ -71,6 +79,8 @@ class Process:
     actions: list[Action]
     process_state: int
 
+    mutex: Lock
+
     # From Venkatesan algorithm
     version: int
     Uq: list[ProcessAddress]
@@ -89,6 +99,8 @@ class Process:
         self.actions = config.processes[identifier].action_list
 
         self.incoming_socket = socket(AF_INET, SOCK_STREAM) # TCP over IPv4
+
+        self.mutex = Lock()
 
         self.connections = {}
         for connection in config.processes[identifier].connections:
@@ -114,14 +126,53 @@ class Process:
                 s = socket(AF_INET, SOCK_STREAM)
                 s.connect((peer_addr.address, peer_addr.port))
                 self.connections[peer_addr] = s
+
+                s.send(InitialConnectionMessage(self.identifier).serialise())
+
                 print(f"Connected to {peer_addr.address}:{peer_addr.port}")
             except Exception as e:
                 print(f"Failed to connect to {peer_addr.address}:{peer_addr.port} - {e}")
 
+        # Wait for all connections to be made
+        while not all(filter(lambda con: con is None, self.connections)):
+            s = socket(AF_INET, SOCK_STREAM)
+            s.bind((self.identifier.address, self.identifier.port))
+            s.listen(5)
+
+            (client_sock, _address) = s.accept()
+
+            initial_connection_message = InitialConnectionMessage.deserialise(client_sock.recv(BUFFER_SIZE))
+
+            self.connections[initial_connection_message.connecting_address] = client_sock
+
+
+        # Send actions in another thread
+        action_thread = Thread(target=self.handle_sending_actions)
+        action_thread.start()
+
+        # Handle incoming connections
+        while True:
+            sockets, _, _ = select(self.connections, [], [], 1)
+            for sock in sockets:
+                # This is for type hinting, remove before submission
+                sock: socket
+
+                data, addr = sock.recvfrom(BUFFER_SIZE)
+                # TODO: THIS
+
+                print(data, addr)
+
+
+        # Handle stopping thread?
+        action_thread.join()
+
+    def handle_sending_actions(self):
         for action in self.actions:
             sleep(action.delay)
-            print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
-            self.send_message(message=action, message_to=action.to) # action should inherit message (in config.py)
+
+            with self.mutex:
+                print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
+                self.send_message(message=action, message_to=action.to) # action should inherit message (in config.py)
 
     def send_message(self, message: Message, message_to: ProcessAddress) -> bool:
         """Send a message to `message_to`."""
@@ -232,6 +283,7 @@ class Process:
         self.record[c] = False
 
         # Send an ack on c
+        # TODO: What does this actually accomplish?
         self.send_message(ControlMessage(ControlMessageType.ACK, m.version), c)
 
     def receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):

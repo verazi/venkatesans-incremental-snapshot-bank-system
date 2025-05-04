@@ -1,22 +1,15 @@
 from enum import Enum
 
+from .config import ProcessAddress
 from .message import Message
 
-class ControlMessageType(Enum):
-    INIT_SNAP = 0
-    SNAP_COMPLETED = 1
-    MARKER = 2
-    ACK = 3
-
-class ControlMessage(Message):
+class InitialConnectionMessage(Message):
     """A control message sent as part of taking a snapshot."""
 
-    message_type: ControlMessageType
-    version: int
+    connecting_address: ProcessAddress
 
-    def __init__(self, message_type: ControlMessageType, current_version: int):
-        self.message_type = message_type
-        self.current_version = current_version
+    def __init__(self, connecting_address: ProcessAddress):
+        self.connecting_address = connecting_address
 
     def serialise(self) -> str:
         """Serialise a `ControlMessage` into a json string to be sent over a socket."""
@@ -29,4 +22,4 @@ class ControlMessage(Message):
         """Deserialise a json string into a `ControlMessage` object."""
 
         # TODO: STUB
-        return cls(ControlMessageType.ACK, 1)
+        return cls(ProcessAddress("localhost", 10101))
