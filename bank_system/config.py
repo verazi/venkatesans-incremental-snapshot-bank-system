@@ -17,7 +17,7 @@ class ProcessAddress:
     port: int
 
 @dataclass
-class Action(Message):
+class Action():
     """An action to take in the system
 
     Attributes
