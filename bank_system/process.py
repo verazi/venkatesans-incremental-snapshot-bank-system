@@ -36,6 +36,7 @@ class Process:
         self.port = identifier.port
         self.primary = config.processes[identifier].primary
         self.actions = config.processes[identifier].action_list
+        self.sent_actions: list[Action] = [] # to save all actions we've ever sent
 
         # Server socket for incoming connections
         self.incoming_socket = socket(AF_INET, SOCK_STREAM) # Create a TCP IPv4 socket for incoming connections
@@ -74,7 +75,6 @@ class Process:
 
         # Send message to peers
         for action in self.actions:
-            # TODO: Store the action
             print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
             self.send_message(message=action, message_to=action.to) # action should inherit message (in config.py)
 
@@ -82,6 +82,10 @@ class Process:
         """
         Send a message to `message_to`.
         """
+
+        # store sent action
+        if isinstance(message, Action):
+            self.sent_actions.append(message)
 
         if message_to not in self.connections or self.connections[message_to] is None:
             print(f"No connection to {message_to.address}:{message_to.port}") # Assuming Full Mesh
