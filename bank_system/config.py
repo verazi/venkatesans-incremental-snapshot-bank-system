@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from message import Message
 
 @dataclass
 class ProcessAddress:
@@ -16,7 +17,7 @@ class ProcessAddress:
     port: int
 
 @dataclass
-class Action:
+class Action(Message):
     """An action to take in the system
 
     Attributes
