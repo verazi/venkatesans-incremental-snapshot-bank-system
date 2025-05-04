@@ -42,6 +42,7 @@ class Process:
         self.incoming_socket = socket(AF_INET, SOCK_STREAM) # Create a TCP IPv4 socket for incoming connections
         self.incoming_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1) # for restarting
 
+
         self.connections = {}
         for connection in config.processes[identifier].connections:
             # Initialise the connection in the dict as none, connect later when we start()
@@ -72,6 +73,7 @@ class Process:
                 print(f"Connected to {peer_addr.address}:{peer_addr.port}")
             except Exception as e:
                 print(f"Failed to connect to {peer_addr.address}:{peer_addr.port} - {e}")
+
 
         # Send message to peers
         for action in self.actions:
