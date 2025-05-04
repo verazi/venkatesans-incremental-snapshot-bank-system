@@ -1,3 +1,4 @@
+from asyncio.trsock import _RetAddress
 from typing import Any
 from socket import socket, AF_INET, SOCK_STREAM
 from time import sleep
@@ -79,7 +80,10 @@ class Process:
     actions: list[Action]
     process_state: int
 
+    # Connection variables
     mutex: Lock
+    addresses: dict[_RetAddress, ProcessAddress]
+
 
     # From Venkatesan algorithm
     version: int
@@ -101,6 +105,7 @@ class Process:
         self.incoming_socket = socket(AF_INET, SOCK_STREAM) # TCP over IPv4
 
         self.mutex = Lock()
+        self.addresses = dict()
 
         self.connections = {}
         for connection in config.processes[identifier].connections:
@@ -128,6 +133,7 @@ class Process:
                 self.connections[peer_addr] = s
 
                 s.send(InitialConnectionMessage(self.identifier).serialise())
+                self.addresses[s.getpeername()] = peer_addr
 
                 print(f"Connected to {peer_addr.address}:{peer_addr.port}")
             except Exception as e:
@@ -144,6 +150,7 @@ class Process:
             initial_connection_message = InitialConnectionMessage.deserialise(client_sock.recv(BUFFER_SIZE))
 
             self.connections[initial_connection_message.connecting_address] = client_sock
+            self.addresses[_address] = initial_connection_message.connecting_address
 
 
         # Send actions in another thread
@@ -160,7 +167,7 @@ class Process:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
                 # TODO: THIS
 
-                print(data, addr)
+
 
 
         # Handle stopping thread?
