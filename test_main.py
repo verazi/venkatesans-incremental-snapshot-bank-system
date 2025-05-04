@@ -6,8 +6,8 @@ import time
 import unittest
 from types import SimpleNamespace
 
-from bank_system.config import ProcessAddress
 from bank_system.process import Process
+from bank_system.config import ProcessAddress, Action, ProcessConfig, Config
 
 TEST_CONFIG = 'test_config.json'
 
@@ -86,6 +86,44 @@ class TestProcessStart(unittest.TestCase):
         sock.close()
         p1.incoming_socket.close()
 
+# Test for connection
+"""
 if __name__ == '__main__':
     time.sleep(0.1)
     unittest.main(verbosity=2)
+"""
+
+
+
+# Test for Config
+if __name__ == "__main__":
+    addr1 = ProcessAddress("127.0.0.1", 8001)
+    addr2 = ProcessAddress("127.0.0.1", 8002)
+
+    action = Action(to=addr2, amount=100, delay=2)
+    pc1 = ProcessConfig(
+        address=addr1,
+        primary=True,
+        connections=[addr2],
+        initial_money=1000,
+        action_list=[action]
+    )
+
+    config = Config({addr1: pc1})
+
+    s = config.serialise()
+    print("=== Serialized Config ===")
+    print(s)
+
+    print("\n=== Deserialized Config ===")
+    cfg = Config.deserialise(s)
+
+    for addr, pc in cfg.processes.items():
+        print(f"Node: {addr.address}:{addr.port}")
+        print(f"  Primary: {pc.primary}")
+        print(f"  Initial money: {pc.initial_money}")
+        print(f"  Connections: {[f'{c.address}:{c.port}' for c in pc.connections]}")
+        for a in pc.action_list:
+            print(f"  Action → to: {a.to.address}:{a.to.port}, amount: {a.amount}, delay: {a.delay}")
+
+
