@@ -1,20 +1,20 @@
 from typing import Any
-from socket import socket, AF_INET, SOCK_STREAM, timeout
+from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
+from threading import Thread, Lock
 from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
 from select import select
-from threading import Thread, Lock
-from sys import exit
 
-from bank_system.message_factory import MessageFactory
-
+from .message_factory import MessageFactory
 from .initial_connection_message import InitialConnectionMessage
 from .message import Message
-from .config import Config, ProcessAddress, Action
+from .config import Config, Action
 from .control_message import ControlMessage, ControlMessageType
+from .process_address import ProcessAddress
 
 BUFFER_SIZE = 2048
+INTRODUCED_DELAY = 1
 
 @dataclass
 class State:
@@ -85,7 +85,7 @@ class Process:
     # Connection variables
     mutex: Lock
     addresses: dict[Any, ProcessAddress] # Any should be _RetAddress
-
+    buffers: dict[Any, str]
 
     # From Venkatesan algorithm
     version: int
@@ -103,15 +103,17 @@ class Process:
         self.identifier = identifier
         self.primary = config.processes[identifier].primary
         self.actions = config.processes[identifier].action_list
+        self.process_state = config.processes[identifier].initial_money
+        self.sent_actions: list[Action] = []
 
-        self.incoming_socket = socket(AF_INET, SOCK_STREAM) # TCP over IPv4
+        self.incoming_socket = socket(AF_INET, SOCK_STREAM) # TCP -- stream-oriented
+        self.incoming_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
 
-        self.mutex = Lock()
-        self.addresses = dict()
+        self.mutex = Lock() # avoid edit doc simultaneously
+        self.buffers = dict()
 
         self.connections = {}
         for connection in config.processes[identifier].connections:
-            # Initialise the connection in the dict as none, connect later when we start()
             self.connections[connection] = None
 
         self.version = 0
@@ -123,107 +125,103 @@ class Process:
 
         self.parent = None
 
-    def listen_for_peer_connections(self):
+    def start(self):
+        # Listen for peers
+        self.incoming_socket.bind((self.identifier.address, self.identifier.port))
+        self.incoming_socket.listen()
 
-        # Wait for all connections to be made
-        while len(list(filter(lambda con: con is None, self.connections.values()))) > 0:
+        self._process_print(f"Listening on {self.identifier}")
+
+        accept_loop = Thread(target=self._accept_loop, daemon=True)
+        accept_loop.start()
+
+        # Try sending a message to peers
+        for peer_addr in self.connections:
+            # Having a try here raises: "RuntimeError: dictionary changed size during iteration" ????
             s = socket(AF_INET, SOCK_STREAM)
-            s.bind((self.identifier.address, self.identifier.port))
+            s.connect((peer_addr.address, peer_addr.port))
 
-            print(f"Waiting for {len(list(filter(lambda con: con is None, self.connections.values())))} connections")
-            s.listen(5)
+            self.connections[peer_addr] = s
+            self.buffers[s] = ""
 
-            (client_sock, _address) = s.accept()
-            initial_connection_message = InitialConnectionMessage.deserialise(client_sock.recv(BUFFER_SIZE))
+            s.send(InitialConnectionMessage(self.identifier).serialise().encode('utf-8'))
 
-            with self.mutex:
-                self.connections[initial_connection_message.connecting_address] = client_sock
-                self.addresses[_address] = initial_connection_message.connecting_address
+            self._process_print(f"Connected to {peer_addr.address}:{peer_addr.port}")
+
+        # Wait for all connections before starting to send messages
+        accept_loop.join()
 
         connections = self.connections.__repr__()
-        print(self.identifier, "finished listening for peers", connections)
-
-    def start(self):
-        """Start the process.
-
-        Open connections to all connected processes. Start sending money to connected processes.
-        """
-
-        listen_for_peers_thread = Thread(target=self.listen_for_peer_connections)
-        listen_for_peers_thread.start()
-
-        for peer_addr in self.connections:
-            try:
-                s = socket(AF_INET, SOCK_STREAM)
-                s.connect((peer_addr.address, peer_addr.port))
-
-                with self.mutex:
-                    self.connections[peer_addr] = s
-
-                    s.send(InitialConnectionMessage(self.identifier).serialise().encode())
-                    self.addresses[s.getpeername()] = peer_addr
-
-                    print(f"Connected to {peer_addr.address}:{peer_addr.port}")
-            except Exception as e:
-                print(f"Failed to connect to {peer_addr.address}:{peer_addr.port} - {e}")
-
-        listen_for_peers_thread.join()
-
+        self._process_print(self.identifier, "finished listening for peers", connections)
 
         # Send actions in another thread
-        action_thread = Thread(target=self.handle_sending_actions)
+        action_thread = Thread(target=self._action_loop)
         action_thread.start()
 
-        print(self.identifier, self.connections)
-
-        # Handle incoming connections
+        # Listen for incoming messages
         while True:
-            sockets, _, _ = select(list(self.connections.values()), [], [], 1)
-            for sock in sockets:
-                # This is for type hinting, remove before submission
-                sock: socket
-
+            print("WAIT")
+            print(list(self.connections.values()))
+            ready_sockets, _, _ = select(list(self.connections.values()), [], []) # save bandwidth
+            for sock in ready_sockets:
+                print("READY")
                 data = sock.recv(BUFFER_SIZE)
 
-                message = MessageFactory.deserialise(data)
-                message_from = self.addresses[sock.getpeername()]
+                self.buffers[sock] += data.decode('utf-8')
+                while '\n' in self.buffers[sock]:
+                    line, self.buffers[sock] = self.buffers[sock].split('\n', 1)
 
-                with self.mutex:
-                    self.handle_message(message, message_from)
+                    message = MessageFactory.deserialise(line)
+
+                    self._process_print("Received message")
+
+                    with self.mutex:
+                        message_from = message.message_from
+                        self._receive_message(message, message_from)
+
+                # TODO: introduce a delay here to better demonstrate crashing with messages in flight
+
+    def _send_message(self, message: Message, message_to: ProcessAddress) -> bool:
+        sock: socket
+        sock = self.connections[message_to]
+        data = message.serialise() + "\n"  # newline framing
+        sock.sendall(data.encode('utf-8'))
+
+        return True
 
 
+    def _accept_loop(self):
+        # Only run until all connections are made
+        while len([conn for conn in self.connections.values() if conn is None]) > 0:
+            conn, (peer_ip, peer_port) = self.incoming_socket.accept()
 
+            self._process_print(f"Accepted connection from {peer_ip}:{peer_port}")
 
-        # Handle stopping thread?
-        action_thread.join()
+            initial_connection_message = InitialConnectionMessage.deserialise(conn.recv(BUFFER_SIZE))
+            peer_addr = initial_connection_message.message_from
 
-    def handle_sending_actions(self):
+            with self.mutex:
+                self.connections[peer_addr] = conn
+                self.buffers[conn] = ""
+
+    def _action_loop(self):
         for action in self.actions:
+            self._process_print(f"Waiting {action.delay} to send {action.amount} to {action.to}")
+
             sleep(action.delay)
 
             with self.mutex:
-                print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
-                self.send_message(message=action, message_to=action.to) # action should inherit message (in config.py)
+                self.sent_actions.append(action)
 
-    def send_message(self, message: Message, message_to: ProcessAddress) -> bool:
-        """Send a message to `message_to`."""
-        if message_to not in self.connections or self.connections[message_to] is None:
-            print(f"No connection to {message_to.address}:{message_to.port}") # Assuming Full Mesh
-            return False
+                self._process_print(f"Sending {action.amount} to {action.to.address}:{action.to.port}")
+                self._send_message(message=action.to_message(self.identifier), message_to=action.to)
 
-        try:
-            sock = self.connections[message_to]
-            sock.sendall(message.serialise().encode('utf-8'))
-            # Pause to make demonstrating dropped messages during crashes easier
-            sleep(1)
-            return True
-        except Exception as e:
-            print(f"Failed to send message to {message_to.address}:{message_to.port} - {e}")
-            return False
+        self._process_print("Finished actions")
 
+    def _process_print(self, *args):
+        print(f"[{self.identifier}] ", *args)
 
-
-    def receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
+    def _receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
         """Handles received a message from any other process.
 
         TODO: This will need to handle messages one at a time, not multiple at once. Possibly that
@@ -235,25 +233,27 @@ class Process:
 
         if isinstance(message, ControlMessage):
             if message.message_type == ControlMessageType.INIT_SNAP:
-                self.receive_initiate(self.identifier, message_from, message_from, message)
+                self._receive_initiate(self.identifier, message_from, message_from, message)
             elif message.message_type == ControlMessageType.MARKER:
-                self.receive_marker(message_from, self.identifier, message_from, message)
+                self._receive_marker(message_from, self.identifier, message_from, message)
             elif message.message_type == ControlMessageType.ACK:
                 pass # TODO: what do we do
             elif message.message_type == ControlMessageType.SNAP_COMPLETED:
                 pass # TODO: what do we do
         elif isinstance(message, Message): # TODO underlying message type
-            self.receive_und(message_from, self.identifier, message_from, message)
+            self._receive_und(message_from, self.identifier, message_from, message)
 
-    def handle_message(self, message: Message, message_from: ProcessAddress):
+    def _handle_message(self, message: Message, message_from: ProcessAddress):
         """Handle the logic for receiving an underlying message."""
+        self._process_print("Handling underlying message")
+
         self.process_state += message.amount # TODO: Update variable name and Message type
 
     # From Venkatesan algorithm
 
     # TODO: c is always one of q or r, should maybe deduplicate? Sticking to the algorithm might
     #       be easier to read.
-    def send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
+    def _send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
         """Executed when q sends a primary message to r.
 
         Attributes
@@ -269,9 +269,9 @@ class Process:
         """
 
         self.Uq += c
-        self.send_message(m, q)
+        self._send_message(m, q)
 
-    def receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
+    def _receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
         """Executed when a primary message is received.
 
         Attributes
@@ -288,9 +288,9 @@ class Process:
         if self.record[c]:
             self.state[c] += m
 
-        self.handle_message(m, q)
+        self._handle_message(m, q)
 
-    def receive_marker(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+    def _receive_marker(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives a marker from a neighbour.
 
         Attributes
@@ -307,7 +307,7 @@ class Process:
 
         if self.version < m.version:
             # Send init_snap(self.version+1) to self (q)
-            self.send_message(ControlMessage(ControlMessageType.INIT_SNAP, self.version + 1), q)
+            self._send_message(ControlMessage(ControlMessageType.INIT_SNAP, self.version + 1), q)
             self.state[c] = set()
 
         self.link_states += self.state[c]
@@ -315,9 +315,9 @@ class Process:
 
         # Send an ack on c
         # TODO: What does this actually accomplish?
-        self.send_message(ControlMessage(ControlMessageType.ACK, m.version), c)
+        self._send_message(ControlMessage(ControlMessageType.ACK, m.version), c)
 
-    def receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+    def _receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives an init_snap message from it's parent.
 
         Attributes
@@ -347,7 +347,7 @@ class Process:
 
             for connection in self.Uq:
                 # Send marker on connection
-                self.send_message(ControlMessage(ControlMessageType.MARKER, m.version), connection)
+                self._send_message(ControlMessage(ControlMessageType.MARKER, m.version), connection)
 
             self.Uq = set()
 
@@ -357,7 +357,7 @@ class Process:
         else:
             pass # We disgard the init_snap message, already received an init_snap fo this version
 
-    def receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+    def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives a snap_completed message from it's child."""
 
         if self.primary:
@@ -365,5 +365,5 @@ class Process:
         else:
             if self.parent is not None:
                 # Send a snapshot_completed message to parent
-                self.send_message(ControlMessage(ControlMessageType.SNAP_COMPLETED, m.version), self.parent)
+                self._send_message(ControlMessage(ControlMessageType.SNAP_COMPLETED, m.version), self.parent)
                 self.parent = None

@@ -1,6 +1,8 @@
 from enum import Enum
+import json
 
 from .message import Message
+from .process_address import ProcessAddress
 
 class ControlMessageType(Enum):
     INIT_SNAP = 0
@@ -8,25 +10,42 @@ class ControlMessageType(Enum):
     MARKER = 2
     ACK = 3
 
+
+
 class ControlMessage(Message):
     """A control message sent as part of taking a snapshot."""
 
-    message_type: ControlMessageType
+    MESSAGE_TYPE = "control"
+
+    control_message_type: ControlMessageType
     version: int
 
-    def __init__(self, message_type: ControlMessageType, current_version: int):
-        self.message_type = message_type
+    def __init__(self, message_from: ProcessAddress, control_message_type: ControlMessageType, current_version: int):
+        self.control_message_type = control_message_type
         self.current_version = current_version
+
+        super().__init__(message_from)
 
     def serialise(self) -> str:
         """Serialise a `ControlMessage` into a json string to be sent over a socket."""
 
-        # TODO: STUB
-        return "blah"
+        return json.dumps({
+            "type": ControlMessage.MESSAGE_TYPE,
+            "message_from": {
+                "address": self.message_from.address,
+                "port": self.message_from.port,
+            },
+            "control_message_type": self.control_message_type,
+            "version": self.version,
+        })
 
     @classmethod
     def deserialise(cls, message_string: str):
         """Deserialise a json string into a `ControlMessage` object."""
 
-        # TODO: STUB
-        return cls(ControlMessageType.ACK, 1)
+        raw = json.loads(message_string)
+
+        assert(raw["type"] == ControlMessage.MESSAGE_TYPE)
+
+        message_from = ProcessAddress(raw["message_from"]["address"], raw["message_from"]["port"])
+        return cls(message_from, raw["control_message_type"], raw["version"])

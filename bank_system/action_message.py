@@ -1,35 +1,39 @@
-from enum import Enum
 import json
 
 from .message import Message
 from .process_address import ProcessAddress
 
-class InitialConnectionMessage(Message):
+class ActionMessage(Message):
     """A control message sent as part of taking a snapshot."""
 
-    MESSAGE_TYPE = "initial_connection"
+    MESSAGE_TYPE = "action"
 
-    def __init__(self, message_from: ProcessAddress):
+    amount: int
+
+    def __init__(self, message_from: ProcessAddress, amount: int):
+        self.amount = amount
+
         super().__init__(message_from)
 
     def serialise(self) -> str:
-        """Serialise a `ControlMessage` into a json string to be sent over a socket."""
+        """Serialise a `ActionMessage` into a json string to be sent over a socket."""
 
         return json.dumps({
-            "type": InitialConnectionMessage.MESSAGE_TYPE,
+            "type": ActionMessage.MESSAGE_TYPE,
             "message_from": {
                 "address": self.message_from.address,
                 "port": self.message_from.port,
-            }
+            },
+            "amount": self.amount,
         })
 
     @classmethod
     def deserialise(cls, message_string: str):
-        """Deserialise a json string into a `ControlMessage` object."""
+        """Deserialise a json string into a `ActionMessage` object."""
 
         raw = json.loads(message_string)
 
-        assert(raw["type"] == InitialConnectionMessage.MESSAGE_TYPE)
+        assert(raw["type"] == ActionMessage.MESSAGE_TYPE)
 
         message_from = ProcessAddress(raw["message_from"]["address"], raw["message_from"]["port"])
-        return cls(message_from)
+        return cls(message_from, raw["amount"])
