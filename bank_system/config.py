@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from message import Message
 
+from .message import Message
+
 @dataclass
 class ProcessAddress:
     """The address of a process.
@@ -17,7 +19,7 @@ class ProcessAddress:
     port: int
 
 @dataclass
-class Action():
+class Action(Message):
     """An action to take in the system
 
     Attributes
@@ -33,6 +35,19 @@ class Action():
     to: ProcessAddress
     amount: float
     delay: int
+
+    def serialise(self) -> str:
+        return json.dumps({
+            "type": "action",
+            "to": {"address": self.to.address, "port": self.to.port},
+            "amount": self.amount
+        })
+
+    @classmethod
+    def deserialise(cls, message_string: str):
+        obj = json.loads(message_string)
+        addr = ProcessAddress(obj["to"]["address"], obj["to"]["port"])
+        return cls(to=addr, amount=obj["amount"], delay=0)
 
 @dataclass
 class ProcessConfig:
