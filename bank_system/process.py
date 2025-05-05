@@ -10,6 +10,19 @@ from .control_message import ControlMessage
 
 
 class Process:
+     """A process that can connect to and send messages to other processes.
+     Attributes
+     ----------
+     primary : bool
+         If the process is the primary process in charge of starting snapshots.
+     port : int
+         The port the process is listening on.
+     actions : list[Action]
+         A list of actions the process will take in the system.
+     connections : dict[ProcessAddress, Any]
+         All processes this process is directly connected to. TODO: the type
+     """
+    
     primary: bool
     port: int
     connections: dict[ProcessAddress, Any]
