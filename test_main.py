@@ -1,91 +1,89 @@
-# test for TCP connection
-import json
-import threading
 import socket
+import threading
 import time
 import unittest
-from types import SimpleNamespace
-
-from bank_system.config import ProcessAddress
+from bank_system.config import ProcessAddress, Action, ProcessConfig, Config
 from bank_system.process import Process
 
-TEST_CONFIG = 'test_config.json'
-
-# config.py
-ProcessAddress.__hash__ = lambda self: hash((self.address, self.port)) # hashable
-
 def load_dummy_config():
-    """
-    read test_config.json and create a dummy config
+    addr1 = ProcessAddress("127.0.0.1", 5001)
+    addr2 = ProcessAddress("127.0.0.1", 5002)
+    addr3 = ProcessAddress("127.0.0.1", 5003)
 
-    return
-      - conf: .processes attribute, key: ProcessAddress; value: stub config
-      - addr1, addr2: ProcessAddress instances
-    """
+    action1 = Action(to=addr2, amount=100, delay=0)
+    action2 = Action(to=addr3, amount=200, delay=0.1)
 
-    with open(TEST_CONFIG, 'r') as f:
-        raw = json.load(f)
+    pc1 = ProcessConfig(
+        address=addr1,
+        primary=True,
+        connections=[addr2, addr3],
+        initial_money=1000,
+        action_list=[action1, action2]
+    )
 
-    # only for test: address → ProcessAddress map manually / deserialise in config
-    addr_map = {
-        'node1': ProcessAddress('127.0.0.1', 8001),
-        'node2': ProcessAddress('127.0.0.1', 8002),
-    }
+    pc2 = ProcessConfig(
+        address=addr2,
+        primary=False,
+        connections=[addr1],
+        initial_money=1000,
+        action_list=[]
+    )
 
-    conf = SimpleNamespace(processes={})
-    for name, entry in raw['nodes'].items():
-        addr = addr_map[name]
-        peers = [ProcessAddress(c['address'], c['port']) for c in entry['connections']]
-        conf.processes[addr] = SimpleNamespace(
-            primary=entry['primary'],
-            action_list=entry['action_list'],
-            connections=peers
-        )
+    pc3 = ProcessConfig(
+        address=addr3,
+        primary=False,
+        connections=[addr1],
+        initial_money=1000,
+        action_list=[]
+    )
 
-    return conf, addr_map['node1'], addr_map['node2']
+    return Config({addr1: pc1, addr2: pc2, addr3: pc3}), addr1, addr2, addr3
 
 
-class TestProcessStart(unittest.TestCase):
-    def test_start_can_connect_to_peer(self):
-        conf, addr1, addr2 = load_dummy_config()
+class TestProcessSenderOnly(unittest.TestCase):
 
-        # start TCP server to accept node1 connection
-        server_ready = threading.Event()
+    def test_only_sender_process(self):
+        config, addr1, addr2, addr3 = load_dummy_config()
+        received = []
+        ready = threading.Event()
+        ready_count = {"val": 0}
+        recv_lock = threading.Lock()
 
-        def peer_server():
-            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            srv.bind((addr2.address, addr2.port))
-            srv.listen(1)
-            server_ready.set()
-            conn, _ = srv.accept()
-            conn.close()
-            srv.close()
+        def mock_receiver(bind_addr, label):
+            def recv_server():
+                nonlocal ready_count
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((bind_addr.address, bind_addr.port))
+                s.listen(1)
+                with recv_lock:
+                    ready_count["val"] += 1
+                    if ready_count["val"] == 2:
+                        ready.set()
+                conn, _ = s.accept()
+                data = conn.recv(1024).decode()
+                received.append((label, data))
+                conn.close()
+                s.close()
+            return recv_server
 
-        t = threading.Thread(target=peer_server, daemon=True)
-        t.start()
+        t2 = threading.Thread(target=mock_receiver(addr2, "node2"), daemon=True)
+        t3 = threading.Thread(target=mock_receiver(addr3, "node3"), daemon=True)
+        t2.start()
+        t3.start()
 
-        # waiting server bind/listen
-        self.assertTrue(server_ready.wait(timeout=2), "Peer server not ready")
+        self.assertTrue(ready.wait(timeout=2), "Mock receivers not ready")
 
-        # create Process 1 and call start()
-        p1 = Process(conf, addr1)
+        p1 = Process(config, addr1)
         p1.start()
 
-        # check connections dict has socket is None
-        sock = p1.connections.get(addr2)
-        self.assertIsNotNone(sock, "Connection to peer was not established")
+        time.sleep(2)
 
-        # check socket is still open
-        try:
-            sock.send(b'') # zero-byte probe
-        except BrokenPipeError:
-            self.fail("Socket was closed unexpectedly")
+        self.assertEqual(len(received), 2)
+        self.assertEqual(received[0][0], "node2")
+        self.assertEqual(received[1][0], "node3")
+        print("\n[Test Passed] Sender process sent messages successfully.")
 
-        # close socket
-        sock.close()
-        p1.incoming_socket.close()
 
 if __name__ == '__main__':
-    time.sleep(0.1)
-    unittest.main(verbosity=2)
+    unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(TestProcessSenderOnly))

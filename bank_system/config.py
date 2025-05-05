@@ -1,4 +1,8 @@
 from dataclasses import dataclass
+from typing import Dict
+import json
+
+from .message import Message
 
 @dataclass
 class ProcessAddress:
@@ -15,8 +19,11 @@ class ProcessAddress:
     address: str
     port: int
 
+    def __hash__(self):
+        return hash((self.address, self.port))
+
 @dataclass
-class Action:
+class Action(Message):
     """An action to take in the system
 
     Attributes
@@ -32,6 +39,19 @@ class Action:
     to: ProcessAddress
     amount: float
     delay: int
+
+    def serialise(self) -> str:
+        return json.dumps({
+            "type": "action",
+            "to": {"address": self.to.address, "port": self.to.port},
+            "amount": self.amount
+        })
+
+    @classmethod
+    def deserialise(cls, message_string: str):
+        obj = json.loads(message_string)
+        addr = ProcessAddress(obj["to"]["address"], obj["to"]["port"])
+        return cls(to=addr, amount=obj["amount"], delay=0)
 
 @dataclass
 class ProcessConfig:
@@ -63,18 +83,72 @@ class Config:
 
     processes: dict[ProcessAddress, ProcessConfig]
 
-    def serialise(self) -> str:
-        """Serialise a config into a json string."""
+    def __init__(self, processes: Dict[ProcessAddress, ProcessConfig]):
+        self.processes = processes
 
-        # TODO: STUB
-        pass
+    def serialise(self) -> str:
+        """
+        Serialise a config into a json string.
+        """
+
+        result = {"nodes": {}}
+
+        for addr, pconfig in self.processes.items():
+            key = f"{addr.address}:{addr.port}"
+            result["nodes"][key] = {
+                "address": addr.address,
+                "port": addr.port,
+                "primary": pconfig.primary,
+                "initial_money": pconfig.initial_money,
+                "connections": [
+                    {"address": c.address, "port": c.port} for c in pconfig.connections
+                ],
+                "action_list": [
+                    {
+                        "to": {"address": a.to.address, "port": a.to.port},
+                        "amount": a.amount,
+                        "delay": a.delay
+                    } for a in pconfig.action_list
+                ]
+            }
+
+        return json.dumps(result, indent=2)
 
     @classmethod
     def deserialise(cls, config_string: str):
-        """Deserialise a json string into a Config object."""
+        """
+        Deserialise a json string into a Config object.
+        """
 
-        # TODO: STUB
-        pass
+        raw = json.loads(config_string)
+        processes: Dict[ProcessAddress, ProcessConfig] = {}
+
+        for _, entry in raw["nodes"].items():
+            addr = ProcessAddress(entry["address"], entry["port"])
+
+            connections = [
+                ProcessAddress(c["address"], c["port"]) for c in entry["connections"]
+            ]
+
+            actions = [
+                Action(
+                    to=ProcessAddress(a["to"]["address"], a["to"]["port"]),
+                    amount=a["amount"],
+                    delay=a["delay"]
+                ) for a in entry["action_list"]
+            ]
+
+            proc_config = ProcessConfig(
+                address=addr,
+                primary=entry["primary"],
+                connections=connections,
+                initial_money=entry["initial_money"],
+                action_list=actions
+            )
+
+            processes[addr] = proc_config
+
+        return cls(processes)
 
 
 
