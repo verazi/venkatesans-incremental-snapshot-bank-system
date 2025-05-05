@@ -81,7 +81,7 @@ class ProcessConfig:
 
 class Config:
 
-    # processes: dict[ProcessAddress, ProcessConfig]
+    processes: dict[ProcessAddress, ProcessConfig]
 
     def __init__(self, processes: Dict[ProcessAddress, ProcessConfig]):
         self.processes = processes
