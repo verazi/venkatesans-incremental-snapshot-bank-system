@@ -5,6 +5,7 @@ from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
 from select import select
+from random import random
 
 from .message_factory import MessageFactory
 from .initial_connection_message import InitialConnectionMessage
@@ -77,7 +78,7 @@ class Process:
 
     primary: bool
     identifier: ProcessAddress
-    connections: dict[ProcessAddress, Any]
+    connections: dict[ProcessAddress, socket]
     incoming_socket: socket
     actions: list[Action]
     process_state: int
@@ -115,6 +116,9 @@ class Process:
         self.connections = {}
         for connection in config.processes[identifier].connections:
             self.connections[connection] = None
+
+        # Self channel
+        self.connections[self.identifier] = None
 
         self.version = 0
         self.link_states = set()
@@ -158,34 +162,56 @@ class Process:
         action_thread = Thread(target=self._action_loop)
         action_thread.start()
 
+        if self.primary:
+            snapshot_thread = Thread(target=self._snapshot_loop)
+            snapshot_thread.start()
+
+        print("DO THE ACTUAL THING")
+
         # Listen for incoming messages
         while True:
-            print("WAIT")
-            print(list(self.connections.values()))
-            ready_sockets, _, _ = select(list(self.connections.values()), [], []) # save bandwidth
+            # self._process_print("start to listen")
+            ready_sockets, write_sockets, err_sockets = select(
+                [ self.connections[k] for k in self.connections ],
+                [ self.connections[k] for k in self.connections ],
+                [ self.connections[k] for k in self.connections ],
+                1
+            ) # save bandwidth
             for sock in ready_sockets:
-                print("READY")
+                self._process_print("\treceived")
+                sock: socket
                 data = sock.recv(BUFFER_SIZE)
+                self._process_print("\tread")
 
-                self.buffers[sock] += data.decode('utf-8')
-                while '\n' in self.buffers[sock]:
-                    line, self.buffers[sock] = self.buffers[sock].split('\n', 1)
 
-                    message = MessageFactory.deserialise(line)
+                # self.buffers[sock] += data.decode('utf-8')
+                # while '\n' in self.buffers[sock]:
+                #     line, self.buffers[sock] = self.buffers[sock].split('\n', 1)
 
-                    self._process_print("Received message")
+                message = MessageFactory.deserialise(data)
 
-                    with self.mutex:
-                        message_from = message.message_from
-                        self._receive_message(message, message_from)
+                with self.mutex:
+                    message_from = message.message_from
+                    self._receive_message(message, message_from)
+
+                self._process_print("\tdone")
 
                 # TODO: introduce a delay here to better demonstrate crashing with messages in flight
+            for conn in write_sockets:
+                pass
+            for conn in err_sockets:
+                print("ERR")
 
     def _send_message(self, message: Message, message_to: ProcessAddress) -> bool:
+        self._process_print(f"Sending message type:{message.MESSAGE_TYPE} to:{message_to}")
+
         sock: socket
         sock = self.connections[message_to]
+
         data = message.serialise() + "\n"  # newline framing
         sock.sendall(data.encode('utf-8'))
+
+        self._process_print("\tSent!")
 
         return True
 
@@ -218,18 +244,28 @@ class Process:
 
         self._process_print("Finished actions")
 
+    def _snapshot_loop(self):
+        while self.primary:
+            # Between 4 and 5 seconds
+            sleep(4 + random())
+            with self.mutex:
+                self._process_print("Start snapshot?")
+
+                self._send_message(
+                    ControlMessage(
+                        self.identifier,
+                        ControlMessageType.INIT_SNAP,
+                        self.version+1
+                    ),
+                    self.identifier
+                )
+
     def _process_print(self, *args):
         print(f"[{self.identifier}] ", *args)
 
     def _receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
-        """Handles received a message from any other process.
-
-        TODO: This will need to handle messages one at a time, not multiple at once. Possibly that
-              will be handled wherever this method is called, maybe in start?
-        # while True:
-        #     ready_socks, _, _ = select(self.connections, [], [], 5)
-        #     for sock in ready_socks:
-        """
+        """Handles received a message from any other process."""
+        self._process_print(f"Received message type:{message.MESSAGE_TYPE} from:{message.message_from}")
 
         if isinstance(message, ControlMessage):
             if message.message_type == ControlMessageType.INIT_SNAP:

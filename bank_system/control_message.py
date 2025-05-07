@@ -20,9 +20,9 @@ class ControlMessage(Message):
     control_message_type: ControlMessageType
     version: int
 
-    def __init__(self, message_from: ProcessAddress, control_message_type: ControlMessageType, current_version: int):
+    def __init__(self, message_from: ProcessAddress, control_message_type: ControlMessageType, version: int):
         self.control_message_type = control_message_type
-        self.current_version = current_version
+        self.version = version
 
         super().__init__(message_from)
 
@@ -35,7 +35,7 @@ class ControlMessage(Message):
                 "address": self.message_from.address,
                 "port": self.message_from.port,
             },
-            "control_message_type": self.control_message_type,
+            "control_message_type": self.control_message_type.value,
             "version": self.version,
         })
 
@@ -48,4 +48,4 @@ class ControlMessage(Message):
         assert(raw["type"] == ControlMessage.MESSAGE_TYPE)
 
         message_from = ProcessAddress(raw["message_from"]["address"], raw["message_from"]["port"])
-        return cls(message_from, raw["control_message_type"], raw["version"])
+        return cls(message_from, ControlMessageType(raw["control_message_type"]), raw["version"])
