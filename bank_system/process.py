@@ -118,7 +118,7 @@ class Process:
             self.connections[connection] = None
 
         # Self channel
-        self.connections[self.identifier] = None
+        # self.connections[self.identifier] = None
 
         self.version = 0
         self.link_states = set()
@@ -139,11 +139,27 @@ class Process:
         accept_loop = Thread(target=self._accept_loop, daemon=True)
         accept_loop.start()
 
+        sleep(2)
+
         # Try sending a message to peers
         for peer_addr in self.connections:
+
+            if peer_addr == self.identifier:
+                continue
+
             # Having a try here raises: "RuntimeError: dictionary changed size during iteration" ????
             s = socket(AF_INET, SOCK_STREAM)
-            s.connect((peer_addr.address, peer_addr.port))
+            # at most 10 times retry
+            for _ in range(10):
+                try:
+                    s.connect((peer_addr.address, peer_addr.port))
+                    break
+                except ConnectionRefusedError:
+                    sleep(0.5)
+            else:
+                raise RuntimeError(f"Connection to {peer_addr} fails")
+
+            # s.connect((peer_addr.address, peer_addr.port))
 
             self.connections[peer_addr] = s
             self.buffers[s] = ""
@@ -153,6 +169,8 @@ class Process:
             self._process_print(f"Connected to {peer_addr.address}:{peer_addr.port}")
 
         # Wait for all connections before starting to send messages
+        while any(conn is None for conn in self.connections.values()):
+            sleep(0.1)
         accept_loop.join()
 
         connections = self.connections.__repr__()
@@ -251,14 +269,44 @@ class Process:
             with self.mutex:
                 self._process_print("Start snapshot?")
 
-                self._send_message(
-                    ControlMessage(
-                        self.identifier,
-                        ControlMessageType.INIT_SNAP,
-                        self.version+1
-                    ),
-                    self.identifier
+                # Create the INIT_SNAP control message
+                ctrl = ControlMessage(
+                    self.identifier,
+                    ControlMessageType.INIT_SNAP,
+                    self.version + 1
                 )
+
+                # 1. Locally handle the snapshot initiation without using a socket
+                #    (treat it as if we just received the INIT_SNAP ourselves)
+                self._receive_initiate(
+                    q=self.identifier,
+                    r=self.identifier,
+                    c=self.identifier,
+                    m=ctrl
+                )
+
+                # 2. Send a MARKER control message to each neighbour in Uq
+                for peer in self.Uq:
+                    self._send_message(
+                        ControlMessage(
+                            self.identifier,
+                            ControlMessageType.MARKER,
+                            ctrl.version
+                        ),
+                        peer
+                    )
+
+                # 3. Clear Uq for the next snapshot round
+                self.Uq = set()
+
+                # self._send_message(
+                #     ControlMessage(
+                #         self.identifier,
+                #         ControlMessageType.INIT_SNAP,
+                #         self.version+1
+                #     ),
+                #     self.identifier
+                # )
 
     def _process_print(self, *args):
         print(f"[{self.identifier}] ", *args)
