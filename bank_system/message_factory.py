@@ -1,4 +1,5 @@
 import json
+from time import sleep
 
 from .action_message import ActionMessage
 from .initial_connection_message import InitialConnectionMessage
@@ -10,6 +11,7 @@ class MessageFactory:
 
     @staticmethod
     def deserialise(data: str) -> Message:
+
         raw = json.loads(data)
 
         match raw["type"]:

@@ -21,8 +21,7 @@ class InitialConnectionMessage(Message):
                 "address": self.message_from.address,
                 "port": self.message_from.port,
             }
-        }) + "\n"
-
+        })
     @classmethod
     def deserialise(cls, message_string: str):
         """Deserialise a json string into a `ControlMessage` object."""

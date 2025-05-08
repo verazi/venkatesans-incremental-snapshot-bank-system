@@ -1,4 +1,3 @@
-from typing import Any
 from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
 from threading import Thread, Lock
 from time import sleep
@@ -6,7 +5,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from select import select
 from random import random
+from typing import Any
 
+from .action_message import ActionMessage
 from .message_factory import MessageFactory
 from .initial_connection_message import InitialConnectionMessage
 from .message import Message
@@ -26,12 +27,20 @@ class State:
     ----------
     money : int
         The amount of money the process has available.
-    next_action : int | None
+    last_action : int | None
         The next action to be performed.
     """
 
     money: int
-    next_action: int | None
+    last_action: int | None
+
+@dataclass
+class Snapshot:
+    """A single snapshot."""
+
+    state: State
+
+    connection_states: Any
 
 class Process:
     """A process that can connect to and send messages to other processes.
@@ -64,8 +73,7 @@ class Process:
     connections: list[ProcessAddress]
 
     actions: list[Action]
-    sent_actions: list[Action]
-    process_state: int
+    process_state: State
 
     mutex: Lock
 
@@ -75,7 +83,7 @@ class Process:
     p_state: set[State]
     state: defaultdict[ProcessAddress, set[State]]
     link_states: set[State]
-    loc_snap: list[set[State]]
+    loc_snap: dict[int, Snapshot]
 
     # # My additions
     record: defaultdict[ProcessAddress, bool]
@@ -96,17 +104,17 @@ class Process:
         self.primary = config.processes[identifier].primary
         self.actions = config.processes[identifier].action_list
 
-        self.process_state = config.processes[identifier].initial_money
-        self.sent_actions = []
+        self.process_state = State(config.processes[identifier].initial_money, None)
 
         # avoid editing simultaneously
         # self.mutex = Lock()
 
         self.version = 0
-        self.link_states = set()
         self.Uq = config.processes[identifier].connections
+        self.p_state = set()
         self.state = defaultdict(set)
-        self.loc_snap = []
+        self.link_states = set()
+        self.loc_snap = dict()
         self.record = defaultdict(lambda: False)
         self.parent = None
 
@@ -168,17 +176,21 @@ class Process:
                 sock: socket
                 data = sock.recv(BUFFER_SIZE)
 
-                self._print("\tread")
+                self._print("\tread {data}")
 
-                message = MessageFactory.deserialise(data)
+                for raw_message in data.split(b"\n"):
+                    if len(raw_message) == 0:
+                        continue
 
-                # with self.mutex:
-                message_from = message.message_from
-                self._receive_message(message, message_from)
+                    message = MessageFactory.deserialise(raw_message)
 
-                self._print("\tdone")
+                    # with self.mutex:
+                    message_from = message.message_from
+                    self._receive_message(message, message_from)
 
-                # TODO: introduce a delay here to better demonstrate crashing with messages in flight
+                    self._print("\tdone")
+
+                    # TODO: introduce a delay here to better demonstrate crashing with messages in flight
 
 
     def _waiting_for_connections(self):
@@ -210,13 +222,12 @@ class Process:
 
             sleep(action.delay)
 
-            # with self.mutex:
-            self.sent_actions.append(action)
-
-            # TODO: modify state
-
             # self._print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
             self._send_message(message=action.to_message(self.identifier), message_to=action.to)
+
+            with self.mutex:
+                self.process_state.last_action = action
+                self.process_state.money -= action.amount
 
         self._print("Finished actions")
 
@@ -245,7 +256,7 @@ class Process:
         sock: socket
         sock = self.outgoing_sockets[message_to]
 
-        data = message.serialise() # + "\n"  # newline framing
+        data = message.serialise() + "\n"  # newline framing
         sock.sendall(data.encode(ENCODING))
 
         self._print("\tSent!")
@@ -255,13 +266,13 @@ class Process:
         self._print(f"Received message type:{message.MESSAGE_TYPE} from:{message.message_from}")
 
         if isinstance(message, ControlMessage):
-            if message.message_type == ControlMessageType.INIT_SNAP:
+            if message.control_message_type == ControlMessageType.INIT_SNAP:
                 self._receive_initiate(self.identifier, message_from, message_from, message)
-            elif message.message_type == ControlMessageType.MARKER:
+            elif message.control_message_type == ControlMessageType.MARKER:
                 self._receive_marker(message_from, self.identifier, message_from, message)
-            elif message.message_type == ControlMessageType.ACK:
+            elif message.control_message_type == ControlMessageType.ACK:
                 pass # TODO: what do we do
-            elif message.message_type == ControlMessageType.SNAP_COMPLETED:
+            elif message.control_message_type == ControlMessageType.SNAP_COMPLETED:
                 pass # TODO: what do we do
         elif isinstance(message, ActionMessage): # TODO underlying message type
             self._receive_und(message_from, self.identifier, message_from, message)
@@ -272,123 +283,121 @@ class Process:
         """Handle the logic for receiving an underlying message."""
         self._print("Handling underlying message")
 
-        self.process_state += message.amount # TODO: Update variable name and Message type
+        self.process_state.money += message.amount # TODO: Update variable name and Message type
 
     # From Venkatesan algorithm
 
-    # # TODO: c is always one of q or r, should maybe deduplicate? Sticking to the algorithm might
-    # #       be easier to read.
-    # def _send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
-    #     """Executed when q sends a primary message to r.
+    def _send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
+        """Executed when q sends a primary message to r.
 
-    #     Attributes
-    #     ----------
-    #     q : ProcessAddress
-    #         origin.
-    #     r : ProcessAddress
-    #         destination
-    #     c : ProcessAddress
-    #         channel
-    #     m : Message
-    #         message
-    #     """
+        Attributes
+        ----------
+        q : ProcessAddress
+            origin.
+        r : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : Message
+            message
+        """
 
-    #     self.Uq += c
-    #     self._send_message(m, q)
+        self.Uq += c
+        self._send_message(m, q)
 
-    # def _receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
-    #     """Executed when a primary message is received.
+    def _receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
+        """Executed when a primary message is received.
 
-    #     Attributes
-    #     ----------
-    #     q : ProcessAddress
-    #         origin.
-    #     r : ProcessAddress
-    #         destination
-    #     c : ProcessAddress
-    #         channel
-    #     m : Message
-    #         message
-    #     """
-    #     if self.record[c]:
-    #         self.state[c] += m
+        Attributes
+        ----------
+        q : ProcessAddress
+            origin.
+        r : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : Message
+            message
+        """
+        if self.record[c]:
+            self.state[c] += m
 
-    #     self._handle_message(m, q)
+        self._handle_message(m, q)
 
-    # def _receive_marker(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
-    #     """Executed when q receives a marker from a neighbour.
+    def _receive_marker(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed when q receives a marker from a neighbour.
 
-    #     Attributes
-    #     ----------
-    #     r : ProcessAddress
-    #         origin.
-    #     q : ProcessAddress
-    #         destination
-    #     c : ProcessAddress
-    #         channel
-    #     m : ControlMessage
-    #         message
-    #     """
+        Attributes
+        ----------
+        r : ProcessAddress
+            origin.
+        q : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : ControlMessage
+            message
+        """
 
-    #     if self.version < m.version:
-    #         # Send init_snap(self.version+1) to self (q)
-    #         self._send_message(ControlMessage(ControlMessageType.INIT_SNAP, self.version + 1), q)
-    #         self.state[c] = set()
+        if self.version < m.version:
+            # Send init_snap(self.version+1) to self (q)
+            self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, self.version + 1), q)
+            self.state[c] = set()
 
-    #     self.link_states += self.state[c]
-    #     self.record[c] = False
+        self.link_states |= self.state[c]
+        self.record[c] = False
 
-    #     # Send an ack on c
-    #     # TODO: What does this actually accomplish?
-    #     self._send_message(ControlMessage(ControlMessageType.ACK, m.version), c)
+        # Send an ack on c
+        # TODO: What does this actually accomplish?
+        self._send_message(ControlMessage(self.identifier, ControlMessageType.ACK, m.version), c)
 
-    # def _receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
-    #     """Executed when q receives an init_snap message from it's parent.
+    def _receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed when q receives an init_snap message from it's parent.
 
-    #     Attributes
-    #     ----------
-    #     q : ProcessAddress
-    #         destination
-    #     r : ProcessAddress
-    #         parent
-    #     c : ProcessAddress
-    #         channel
-    #     m : ControlMessage
-    #         message
-    #     """
+        Attributes
+        ----------
+        q : ProcessAddress
+            destination
+        r : ProcessAddress
+            parent
+        c : ProcessAddress
+            channel
+        m : ControlMessage
+            message
+        """
 
-    #     if self.version < m.version:
-    #         self.loc_snap[self.version] = self.p_state[q] + self.link_states # TODO: I don't think this makes sense
+        if self.version < m.version:
+            self.loc_snap[self.version] = self.p_state | self.link_states # TODO: I don't think this makes sense
 
-    #         self.link_states = set()
-    #         self.p_state[q] = State(self.process_state, Any) # TODO: set to current process state (amount of money)
+            self.link_states = set()
+            self.p_state = State(self.process_state, Any) # TODO: set to current process state (amount of money)
 
-    #         # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
-    #         self.version = m.version
+            # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
+            self.version = m.version
 
-    #         for connection in self.connections:
-    #             self.state[connection] = set()
-    #             self.record[connection] = True
+            for connection in self.connections:
+                self.state[connection] = set()
+                self.record[connection] = True
 
-    #         for connection in self.Uq:
-    #             # Send marker on connection
-    #             self._send_message(ControlMessage(ControlMessageType.MARKER, m.version), connection)
+            for connection in self.Uq:
+                # Send marker on connection
+                self._send_message(ControlMessage(self.identifier, ControlMessageType.MARKER, m.version), connection)
 
-    #         self.Uq = set()
+            self.Uq = set()
 
-    #         # Wait for a snap_completed message on each child
-    #         self.parent = r
+            # Wait for a snap_completed message on each child
+            self.parent = r
 
-    #     else:
-    #         pass # We disgard the init_snap message, already received an init_snap fo this version
+        else:
+            pass # We disgard the init_snap message, already received an init_snap fo this version
 
-    # def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
-    #     """Executed when q receives a snap_completed message from it's child."""
+    def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed when q receives a snap_completed message from it's child."""
 
-    #     if self.primary:
-    #         pass # TODO: Snapshot is complete, save it somehow
-    #     else:
-    #         if self.parent is not None:
-    #             # Send a snapshot_completed message to parent
-    #             self._send_message(ControlMessage(ControlMessageType.SNAP_COMPLETED, m.version), self.parent)
-    #             self.parent = None
+        if self.primary:
+            pass # TODO: Snapshot is complete, save it somehow
+        else:
+            if self.parent is not None:
+                # Send a snapshot_completed message to parent
+                self._send_message(ControlMessage(self.identifier, ControlMessageType.SNAP_COMPLETED, m.version), self.parent)
+                self.parent = None
