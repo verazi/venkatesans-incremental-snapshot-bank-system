@@ -38,28 +38,7 @@ class Process:
 
     Attributes
     ----------
-    primary : bool
-        If the process is the primary process in charge of starting snapshots.
-
-    identifier: ProcessAddress
-        The identifier of the process.
-
-    connections : dict[ProcessAddress, Any]
-        All processes this process is directly connected to. TODO: the type
-
-    incoming_socket : socket
-        Socket connections to receive information on.
-
-    actions : list[Action]
-        A list of actions the process will take in the system.
-
-    process_state : int
-        The current state of this process.
-
-    mutex : Lock
-        A mutex to stop sending and receiving a message at the same time, possibly causing incorrect
-        behaviour with the systems state.
-
+    TODO: THIS
 
     # From Venkatesan algorithm
 
@@ -148,7 +127,7 @@ class Process:
         for peer in self.connections:
             # with self.mutex:
             if peer not in self.incoming_sockets:
-                self._process_print(f"Attemptint {peer}")
+                # self._process_print(f"Attempting {peer}")
                 s = socket(AF_INET, SOCK_STREAM)
                 s.connect((peer.address, peer.port))
 
@@ -244,6 +223,8 @@ class Process:
 
             # with self.mutex:
             self.sent_actions.append(action)
+
+            # TODO: modify state
 
             # self._process_print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
             self._send_message(message=action.to_message(self.identifier), message_to=action.to)
