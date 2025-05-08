@@ -127,14 +127,14 @@ class Process:
         for peer in self.connections:
             # with self.mutex:
             if peer not in self.incoming_sockets:
-                # self._process_print(f"Attempting {peer}")
+                # self._print(f"Attempting {peer}")
                 s = socket(AF_INET, SOCK_STREAM)
                 s.connect((peer.address, peer.port))
 
                 self.outgoing_sockets[peer] = s
 
                 s.send(InitialConnectionMessage(self.identifier).serialise().encode(ENCODING))
-                self._process_print(f"Outgoing connected to {peer.address}:{peer.port}")
+                self._print(f"Outgoing connected to {peer.address}:{peer.port}")
 
         accept_loop.join()
 
@@ -163,12 +163,12 @@ class Process:
             )
 
             for sock in ready_sockets:
-                self._process_print("\treceived")
+                self._print("\treceived")
 
                 sock: socket
                 data = sock.recv(BUFFER_SIZE)
 
-                self._process_print("\tread")
+                self._print("\tread")
 
                 message = MessageFactory.deserialise(data)
 
@@ -176,7 +176,7 @@ class Process:
                 message_from = message.message_from
                 self._receive_message(message, message_from)
 
-                self._process_print("\tdone")
+                self._print("\tdone")
 
                 # TODO: introduce a delay here to better demonstrate crashing with messages in flight
 
@@ -192,32 +192,21 @@ class Process:
         while len(self._waiting_for_connections()) > 0:
             conn, _ = incoming.accept()
 
-            self._process_print("ACCEPTED")
+            self._print("ACCEPTED")
             message = conn.recv(BUFFER_SIZE)
 
             # with self.mutex:
             initial_connection_message = InitialConnectionMessage.deserialise(message)
             peer = initial_connection_message.message_from
 
-            self._process_print(f"Incoming connected to {peer.address}:{peer.port}")
+            self._print(f"Incoming connected to {peer.address}:{peer.port}")
 
             self.incoming_sockets[peer] = conn
-
-    def _send_message(self, message: Message, message_to: ProcessAddress):
-        self._process_print(f"Sending message type:{message.MESSAGE_TYPE} to:{message_to}")
-
-        sock: socket
-        sock = self.outgoing_sockets[message_to]
-
-        data = message.serialise() # + "\n"  # newline framing
-        sock.sendall(data.encode(ENCODING))
-
-        self._process_print("\tSent!")
 
 
     def _action_loop(self):
         for action in self.actions:
-            self._process_print(f"Waiting {action.delay} to send {action.amount} to {action.to}")
+            self._print(f"Waiting {action.delay} to send {action.amount} to {action.to}")
 
             sleep(action.delay)
 
@@ -226,17 +215,17 @@ class Process:
 
             # TODO: modify state
 
-            # self._process_print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
+            # self._print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
             self._send_message(message=action.to_message(self.identifier), message_to=action.to)
 
-        self._process_print("Finished actions")
+        self._print("Finished actions")
 
     def _snapshot_loop(self):
         while self.primary:
             # Between 4 and 5 seconds
             sleep(4 + random())
             with self.mutex:
-                self._process_print("Start snapshot?")
+                self._print("Start snapshot?")
 
                 self._send_message(
                     ControlMessage(
@@ -247,30 +236,41 @@ class Process:
                     self.identifier
                 )
 
-    def _process_print(self, *args):
+    def _print(self, *args):
         print(f"[{self.identifier}] ", *args)
+
+    def _send_message(self, message: Message, message_to: ProcessAddress):
+        self._print(f"Sending message type:{message.MESSAGE_TYPE} to:{message_to}")
+
+        sock: socket
+        sock = self.outgoing_sockets[message_to]
+
+        data = message.serialise() # + "\n"  # newline framing
+        sock.sendall(data.encode(ENCODING))
+
+        self._print("\tSent!")
 
     def _receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
         """Handles received a message from any other process."""
-        self._process_print(f"Received message type:{message.MESSAGE_TYPE} from:{message.message_from}")
+        self._print(f"Received message type:{message.MESSAGE_TYPE} from:{message.message_from}")
 
-        # if isinstance(message, ControlMessage):
-        #     if message.message_type == ControlMessageType.INIT_SNAP:
-        #         self._receive_initiate(self.identifier, message_from, message_from, message)
-        #     elif message.message_type == ControlMessageType.MARKER:
-        #         self._receive_marker(message_from, self.identifier, message_from, message)
-        #     elif message.message_type == ControlMessageType.ACK:
-        #         pass # TODO: what do we do
-        #     elif message.message_type == ControlMessageType.SNAP_COMPLETED:
-        #         pass # TODO: what do we do
-        # elif isinstance(message, Message): # TODO underlying message type
-        #     self._receive_und(message_from, self.identifier, message_from, message)
-        # else:
-        #     self._process_print("NOT MESSAGE TYPE")
+        if isinstance(message, ControlMessage):
+            if message.message_type == ControlMessageType.INIT_SNAP:
+                self._receive_initiate(self.identifier, message_from, message_from, message)
+            elif message.message_type == ControlMessageType.MARKER:
+                self._receive_marker(message_from, self.identifier, message_from, message)
+            elif message.message_type == ControlMessageType.ACK:
+                pass # TODO: what do we do
+            elif message.message_type == ControlMessageType.SNAP_COMPLETED:
+                pass # TODO: what do we do
+        elif isinstance(message, ActionMessage): # TODO underlying message type
+            self._receive_und(message_from, self.identifier, message_from, message)
+        else:
+            self._print("NOT MESSAGE TYPE")
 
     def _handle_message(self, message: Message, message_from: ProcessAddress):
         """Handle the logic for receiving an underlying message."""
-        self._process_print("Handling underlying message")
+        self._print("Handling underlying message")
 
         self.process_state += message.amount # TODO: Update variable name and Message type
 
