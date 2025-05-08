@@ -118,7 +118,7 @@ class Process:
             self.connections[connection] = None
 
         # Self channel
-        # self.connections[self.identifier] = None
+        self.connections[self.identifier] = None
 
         self.version = 0
         self.link_states = set()
@@ -144,9 +144,6 @@ class Process:
         # Try sending a message to peers
         for peer_addr in self.connections:
 
-            if peer_addr == self.identifier:
-                continue
-
             # Having a try here raises: "RuntimeError: dictionary changed size during iteration" ????
             s = socket(AF_INET, SOCK_STREAM)
             # at most 10 times retry
@@ -169,8 +166,6 @@ class Process:
             self._process_print(f"Connected to {peer_addr.address}:{peer_addr.port}")
 
         # Wait for all connections before starting to send messages
-        while any(conn is None for conn in self.connections.values()):
-            sleep(0.1)
         accept_loop.join()
 
         connections = self.connections.__repr__()
@@ -269,6 +264,15 @@ class Process:
             with self.mutex:
                 self._process_print("Start snapshot?")
 
+                # self._send_message(
+                #     ControlMessage(
+                #         self.identifier,
+                #         ControlMessageType.INIT_SNAP,
+                #         self.version+1
+                #     ),
+                #     self.identifier
+                # )
+
                 # Create the INIT_SNAP control message
                 ctrl = ControlMessage(
                     self.identifier,
@@ -299,14 +303,14 @@ class Process:
                 # 3. Clear Uq for the next snapshot round
                 self.Uq = set()
 
-                # self._send_message(
-                #     ControlMessage(
-                #         self.identifier,
-                #         ControlMessageType.INIT_SNAP,
-                #         self.version+1
-                #     ),
-                #     self.identifier
-                # )
+                self._send_message(
+                    ControlMessage(
+                        self.identifier,
+                        ControlMessageType.INIT_SNAP,
+                        self.version+1
+                    ),
+                    self.identifier
+                )
 
     def _process_print(self, *args):
         print(f"[{self.identifier}] ", *args)
