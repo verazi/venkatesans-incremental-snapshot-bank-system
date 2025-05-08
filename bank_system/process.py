@@ -19,7 +19,7 @@ BUFFER_SIZE = 2048
 INTRODUCED_DELAY = 1
 ENCODING = 'utf-8'
 
-@dataclass
+@dataclass(eq=True, frozen=True)
 class State:
     """The current state of the process.
 
@@ -32,9 +32,9 @@ class State:
     """
 
     money: int
-    last_action: int | None
+    last_action: Action | None
 
-@dataclass
+@dataclass(eq=True, frozen=True)
 class Snapshot:
     """A single snapshot."""
 
@@ -80,14 +80,17 @@ class Process:
     # From Venkatesan algorithm
     version: int
     Uq: list[ProcessAddress]
-    p_state: set[State]
-    state: defaultdict[ProcessAddress, set[State]]
+    p_state: State
+    state: defaultdict[ProcessAddress, set[ActionMessage]]
     link_states: set[State]
     loc_snap: dict[int, Snapshot]
 
     # # My additions
     record: defaultdict[ProcessAddress, bool]
     parent: ProcessAddress | None
+    completed_snaps: dict[ProcessAddress, bool]
+    acks: dict[ProcessAddress, bool]
+    active_snapshot: bool
 
     def __init__(self, config: Config, identifier: ProcessAddress):
         self.identifier = identifier
@@ -111,12 +114,15 @@ class Process:
 
         self.version = 0
         self.Uq = config.processes[identifier].connections
-        self.p_state = set()
+        self.p_state = State(config.processes[identifier].initial_money, None)
         self.state = defaultdict(set)
         self.link_states = set()
         self.loc_snap = dict()
         self.record = defaultdict(lambda: False)
         self.parent = None
+        self.completed_snaps = dict()
+        self.acks = dict()
+        self.active_snapshot = False
 
     def start(self):
         # Listen for peers
@@ -226,8 +232,10 @@ class Process:
             self._send_message(message=action.to_message(self.identifier), message_to=action.to)
 
             with self.mutex:
-                self.process_state.last_action = action
-                self.process_state.money -= action.amount
+                self.process_state = State(
+                    self.process_state.money - action.amount,
+                    action,
+                )
 
         self._print("Finished actions")
 
@@ -235,17 +243,20 @@ class Process:
         while self.primary:
             # Between 4 and 5 seconds
             sleep(4 + random())
-            with self.mutex:
-                self._print("Start snapshot?")
+            if not self.active_snapshot:
+                with self.mutex:
+                    self.active_snapshot = True
 
-                self._send_message(
-                    ControlMessage(
-                        self.identifier,
-                        ControlMessageType.INIT_SNAP,
-                        self.version+1
-                    ),
-                    self.identifier
-                )
+                    self._print("Start snapshot?")
+
+                    self._send_message(
+                        ControlMessage(
+                            self.identifier,
+                            ControlMessageType.INIT_SNAP,
+                            self.version+1
+                        ),
+                        self.identifier
+                    )
 
     def _print(self, *args):
         print(f"[{self.identifier}] ", *args)
@@ -266,14 +277,15 @@ class Process:
         self._print(f"Received message type:{message.MESSAGE_TYPE} from:{message.message_from}")
 
         if isinstance(message, ControlMessage):
+            self._print(f"\t{message.control_message_type}")
             if message.control_message_type == ControlMessageType.INIT_SNAP:
                 self._receive_initiate(self.identifier, message_from, message_from, message)
             elif message.control_message_type == ControlMessageType.MARKER:
                 self._receive_marker(message_from, self.identifier, message_from, message)
             elif message.control_message_type == ControlMessageType.ACK:
-                pass # TODO: what do we do
+                self._receive_ack(message_from, self.identifier, message_from, message)
             elif message.control_message_type == ControlMessageType.SNAP_COMPLETED:
-                pass # TODO: what do we do
+                self._receive_snap_completed(message_from, self.identifier, message_from, message)
         elif isinstance(message, ActionMessage): # TODO underlying message type
             self._receive_und(message_from, self.identifier, message_from, message)
         else:
@@ -283,7 +295,10 @@ class Process:
         """Handle the logic for receiving an underlying message."""
         self._print("Handling underlying message")
 
-        self.process_state.money += message.amount # TODO: Update variable name and Message type
+        self.process_state = State(
+            self.process_state.money + message.amount,
+            self.process_state.last_action,
+        )
 
     # From Venkatesan algorithm
 
@@ -320,7 +335,7 @@ class Process:
             message
         """
         if self.record[c]:
-            self.state[c] += m
+            self.state[c].add(m)
 
         self._handle_message(m, q)
 
@@ -367,26 +382,34 @@ class Process:
         """
 
         if self.version < m.version:
-            self.loc_snap[self.version] = self.p_state | self.link_states # TODO: I don't think this makes sense
+            self.loc_snap[self.version] = { self.p_state } | self.link_states # TODO: I don't think this makes sense
 
             self.link_states = set()
-            self.p_state = State(self.process_state, Any) # TODO: set to current process state (amount of money)
+            self.p_state = self.process_state # TODO: set to current process state (amount of money)
 
             # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
             self.version = m.version
 
-            for connection in self.connections:
+            for connection in [ c for c in self.connections if c != self.identifier]:
                 self.state[connection] = set()
                 self.record[connection] = True
+
+            self.acks = { k: False for k in self.Uq }
+
+            self.parent = r
+            self.completed_snaps = { k: False for k in self.connections if k != self.identifier }
+
+            for connection in [ c for c in self.connections if c != self.identifier]:
+                # Send init snap to all incoming channels
+                self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, m.version), connection)
 
             for connection in self.Uq:
                 # Send marker on connection
                 self._send_message(ControlMessage(self.identifier, ControlMessageType.MARKER, m.version), connection)
 
-            self.Uq = set()
 
+            # Wait for an ack on each Uq
             # Wait for a snap_completed message on each child
-            self.parent = r
 
         else:
             pass # We disgard the init_snap message, already received an init_snap fo this version
@@ -394,7 +417,27 @@ class Process:
     def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         """Executed when q receives a snap_completed message from it's child."""
 
+        self.completed_snaps[r] = True
+
+        self._print(self.acks.values())
+        self._print(self.completed_snaps.values())
+
+        if all(self.completed_snaps.values()) and all(self.acks.values()):
+            self.finish_initiate(r, q, c, m)
+
+    def _receive_ack(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        self.acks[r] = True
+
+        if all(self.acks.values()):
+            self.Uq = set()
+
+            if all(self.completed_snaps.values()):
+                self.finish_initiate(r, q, c, m)
+
+    def finish_initiate(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         if self.primary:
+            self._print("FINISHED TODO THIS")
+            self.active_snapshot = False
             pass # TODO: Snapshot is complete, save it somehow
         else:
             if self.parent is not None:

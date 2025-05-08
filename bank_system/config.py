@@ -5,7 +5,7 @@ import json
 from .action_message import ActionMessage
 from .process_address import ProcessAddress
 
-@dataclass
+@dataclass(eq=True, frozen=True)
 class Action:
     """An action to take in the system
 
