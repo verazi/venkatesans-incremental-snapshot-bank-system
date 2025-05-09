@@ -56,6 +56,10 @@ class ProcessConfig:
         The amount of money this process starts with.
     action_list : list[Action]
         A list of actions to take in the system.
+    parent : ProcessAddress | None
+        The parent process in the snapshot tree (None for primary).
+    children : list[ProcessAddress]
+        The child processes in the snapshot tree.
     """
 
     address: ProcessAddress
@@ -63,6 +67,8 @@ class ProcessConfig:
     connections: list[ProcessAddress]
     initial_money: float
     action_list: list[Action]
+    parent: ProcessAddress | None
+    children: list[ProcessAddress]
 
 
 class Config:
@@ -129,7 +135,9 @@ class Config:
                 primary=entry["primary"],
                 connections=connections,
                 initial_money=entry["initial_money"],
-                action_list=actions
+                action_list=actions,
+                parent=None,
+                children=[]
             )
 
             processes[addr] = proc_config
