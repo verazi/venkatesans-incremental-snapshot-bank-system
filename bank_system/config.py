@@ -61,6 +61,7 @@ class ProcessConfig:
     address: ProcessAddress
     primary: bool
     connections: list[ProcessAddress]
+    spanning_connections: list[ProcessAddress]
     initial_money: float
     action_list: list[Action]
 
@@ -89,6 +90,9 @@ class Config:
                 "connections": [
                     {"address": c.address, "port": c.port} for c in pconfig.connections
                 ],
+                "spanning_connections":  [
+                    {"address": c.address, "port": c.port} for c in pconfig.spanning_connections
+                ],
                 "action_list": [
                     {
                         "to": {"address": a.to.address, "port": a.to.port},
@@ -116,6 +120,10 @@ class Config:
                 ProcessAddress(c["address"], c["port"]) for c in entry["connections"]
             ]
 
+            spanning_connections = [
+                ProcessAddress(c["address"], c["port"]) for c in entry["spanning_connections"]
+            ]
+
             actions = [
                 Action(
                     to=ProcessAddress(a["to"]["address"], a["to"]["port"]),
@@ -128,6 +136,7 @@ class Config:
                 address=addr,
                 primary=entry["primary"],
                 connections=connections,
+                spanning_connections=spanning_connections,
                 initial_money=entry["initial_money"],
                 action_list=actions
             )

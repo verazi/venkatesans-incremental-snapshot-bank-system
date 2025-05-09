@@ -71,6 +71,7 @@ class Process:
     outgoing_sockets: dict[ProcessAddress, socket]
 
     connections: list[ProcessAddress]
+    spanning_connections: list[ProcessAddress]
 
     actions: list[Action]
     process_state: State
@@ -100,6 +101,7 @@ class Process:
 
         # Include self connection
         self.connections = config.processes[identifier].connections + [identifier]
+        self.spanning_connections = config.processes[identifier].spanning_connections
         self.sockets = {}
 
         self.mutex = Lock()
@@ -356,14 +358,15 @@ class Process:
 
         if self.version < m.version:
             # Send init_snap(self.version+1) to self (q)
-            self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, self.version + 1), q)
+            # TODO: It might be better to just run the function here instead of sending a message
+            # self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, self.version + 1), q)
+            self._receive_initiate(q, r, c, ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, m.version))
             self.state[c] = set()
 
         self.link_states |= self.state[c]
         self.record[c] = False
 
         # Send an ack on c
-        # TODO: What does this actually accomplish?
         self._send_message(ControlMessage(self.identifier, ControlMessageType.ACK, m.version), c)
 
     def _receive_initiate(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: ControlMessage):
@@ -394,18 +397,24 @@ class Process:
                 self.state[connection] = set()
                 self.record[connection] = True
 
+            self.parent = r
+            self.completed_snaps = { k: False for k in self.spanning_connections if c not in self.Uq }
             self.acks = { k: False for k in self.Uq }
 
-            self.parent = r
-            self.completed_snaps = { k: False for k in self.connections if k != self.identifier }
-
-            for connection in [ c for c in self.connections if c != self.identifier]:
-                # Send init snap to all incoming channels
+            # Send init snap on all spanning connections, unless we are going to send a marker
+            for connection in [ c for c in self.spanning_connections if c not in self.Uq]:
                 self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, m.version), connection)
 
+            # Send a marker to all channels we have sent a message on
             for connection in self.Uq:
                 # Send marker on connection
                 self._send_message(ControlMessage(self.identifier, ControlMessageType.MARKER, m.version), connection)
+
+            self._print("init", self.acks.values(), self.completed_snaps.values())
+
+            # If there are no messages to receive instantly finish the snapshot
+            if all(self.completed_snaps.values()) and all(self.acks.values()):
+                self.finish_initiate(r, q, c, m)
 
 
             # Wait for an ack on each Uq
@@ -419,14 +428,15 @@ class Process:
 
         self.completed_snaps[r] = True
 
-        self._print(self.acks.values())
-        self._print(self.completed_snaps.values())
+        self._print("snap_complted", self.acks.values(), self.completed_snaps.values())
 
         if all(self.completed_snaps.values()) and all(self.acks.values()):
             self.finish_initiate(r, q, c, m)
 
     def _receive_ack(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         self.acks[r] = True
+
+        self._print("ack", self.acks.values(), self.completed_snaps.values())
 
         if all(self.acks.values()):
             self.Uq = set()
