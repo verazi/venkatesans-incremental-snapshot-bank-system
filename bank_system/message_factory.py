@@ -1,6 +1,7 @@
 import json
 from time import sleep
 
+from .snap_completed_message import SnapCompletedMessage
 from .action_message import ActionMessage
 from .initial_connection_message import InitialConnectionMessage
 from .control_message import ControlMessage
@@ -21,3 +22,5 @@ class MessageFactory:
                 return InitialConnectionMessage.deserialise(data)
             case ActionMessage.MESSAGE_TYPE:
                 return ActionMessage.deserialise(data)
+            case SnapCompletedMessage.MESSAGE_TYPE:
+                return SnapCompletedMessage.deserialise(data)

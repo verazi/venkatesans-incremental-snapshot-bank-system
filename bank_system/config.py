@@ -62,6 +62,7 @@ class ProcessConfig:
     primary: bool
     connections: list[ProcessAddress]
     spanning_connections: list[ProcessAddress]
+    parent: ProcessAddress | None
     initial_money: float
     action_list: list[Action]
 
@@ -81,6 +82,12 @@ class Config:
         result = {"nodes": {}}
 
         for addr, pconfig in self.processes.items():
+
+            if pconfig.parent is not None:
+                parent = {"address": pconfig.parent.address, "port": pconfig.parent.port}
+            else:
+                parent = None
+
             key = f"{addr.address}:{addr.port}"
             result["nodes"][key] = {
                 "address": addr.address,
@@ -93,6 +100,7 @@ class Config:
                 "spanning_connections":  [
                     {"address": c.address, "port": c.port} for c in pconfig.spanning_connections
                 ],
+                "parent": parent,
                 "action_list": [
                     {
                         "to": {"address": a.to.address, "port": a.to.port},
@@ -124,6 +132,11 @@ class Config:
                 ProcessAddress(c["address"], c["port"]) for c in entry["spanning_connections"]
             ]
 
+            if entry["parent"] is not None:
+                parent =  ProcessAddress(entry["parent"]["address"], entry["parent"]["port"])
+            else:
+                parent = None
+
             actions = [
                 Action(
                     to=ProcessAddress(a["to"]["address"], a["to"]["port"]),
@@ -137,6 +150,7 @@ class Config:
                 primary=entry["primary"],
                 connections=connections,
                 spanning_connections=spanning_connections,
+                parent=parent,
                 initial_money=entry["initial_money"],
                 action_list=actions
             )

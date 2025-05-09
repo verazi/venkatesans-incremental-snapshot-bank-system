@@ -21,6 +21,7 @@ processes = {
         [
             PA('localhost', 10102),PA('localhost', 10103),
         ],
+        None,
         100,
         [
             Action(PA('localhost', 10102), 1, 10),
@@ -33,7 +34,8 @@ processes = {
         PA('localhost', 10102),
         False,
         [PA('localhost', 10103),PA('localhost', 10101),],
-        [PA('localhost', 10103),],
+        [],
+        PA('localhost', 10101),
         200,
         [
             Action(PA('localhost', 10103), 5, 2),
@@ -46,7 +48,8 @@ processes = {
         PA('localhost', 10103),
         False,
         [PA('localhost', 10101),PA('localhost', 10102),PA('localhost', 10104),],
-        [],
+        [PA('localhost', 10104),],
+        PA('localhost', 10101),
         300,
         [
             Action(PA('localhost', 10102), 5, 2),
@@ -60,6 +63,7 @@ processes = {
         False,
         [PA('localhost', 10103),],
         [],
+        PA('localhost', 10103),
         500,
         [
             Action(PA('localhost', 10103), 5, 2),

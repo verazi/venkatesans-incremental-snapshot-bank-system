@@ -6,9 +6,8 @@ from .process_address import ProcessAddress
 
 class ControlMessageType(Enum):
     INIT_SNAP = 0
-    SNAP_COMPLETED = 1
-    MARKER = 2
-    ACK = 3
+    MARKER = 1
+    ACK = 2
 
 
 

@@ -1,3 +1,4 @@
+import json
 from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
 from threading import Thread, Lock
 from time import sleep
@@ -7,6 +8,7 @@ from select import select
 from random import random
 from typing import Any
 
+from .snap_completed_message import ProcessSnapshot, SnapCompletedMessage, State
 from .action_message import ActionMessage
 from .message_factory import MessageFactory
 from .initial_connection_message import InitialConnectionMessage
@@ -20,27 +22,27 @@ INTRODUCED_DELAY = 1
 ENCODING = 'utf-8'
 
 @dataclass(eq=True, frozen=True)
-class State:
-    """The current state of the process.
+class GlobalSnapshot:
+    snapshots: dict[ProcessAddress, ProcessSnapshot]
 
-    Attributes
-    ----------
-    money : int
-        The amount of money the process has available.
-    last_action : int | None
-        The next action to be performed.
-    """
+    def serialise(self) -> str:
+        return json.dumps({
+            f"{address.address}:{address.port}": json.loads(self.snapshots[address].serialise()) for address in self.snapshots
+        })
 
-    money: int
-    last_action: Action | None
+    @classmethod
+    def deserialise(cls, string: str):
+        raw = json.loads(string)
 
-@dataclass(eq=True, frozen=True)
-class Snapshot:
-    """A single snapshot."""
+        snapshots = {}
 
-    state: State
+        for process in raw["snapshots"]:
+            key_parts = process.split(":")
+            key = ProcessAddress(key_parts[0], int(key_parts[1]))
 
-    connection_states: Any
+            snapshots[key] = ProcessSnapshot.deserialise(json.dumps(raw["snapshots"][process]))
+
+        return cls(snapshots=snapshots)
 
 class Process:
     """A process that can connect to and send messages to other processes.
@@ -77,19 +79,19 @@ class Process:
     process_state: State
 
     mutex: Lock
+    parent: ProcessAddress | None
 
     # From Venkatesan algorithm
     version: int
     Uq: list[ProcessAddress]
     p_state: State
-    state: defaultdict[ProcessAddress, set[ActionMessage]]
-    link_states: set[State]
-    loc_snap: dict[int, Snapshot]
+    state: defaultdict[ProcessAddress, list[ActionMessage]]
+    link_states: dict[ProcessAddress, list[ActionMessage]]
+    # loc_snap: dict[int, ProcessSnapshot]
 
-    # # My additions
+    # My additions
     record: defaultdict[ProcessAddress, bool]
-    parent: ProcessAddress | None
-    completed_snaps: dict[ProcessAddress, bool]
+    completed_snaps: dict[ProcessAddress, ProcessSnapshot|None]
     acks: dict[ProcessAddress, bool]
     active_snapshot: bool
 
@@ -117,11 +119,11 @@ class Process:
         self.version = 0
         self.Uq = config.processes[identifier].connections
         self.p_state = State(config.processes[identifier].initial_money, None)
-        self.state = defaultdict(set)
-        self.link_states = set()
-        self.loc_snap = dict()
+        self.state = defaultdict(list)
+        self.link_states = dict()
+        # self.loc_snap = dict()
         self.record = defaultdict(lambda: False)
-        self.parent = None
+        self.parent = config.processes[identifier].parent
         self.completed_snaps = dict()
         self.acks = dict()
         self.active_snapshot = False
@@ -236,7 +238,7 @@ class Process:
             with self.mutex:
                 self.process_state = State(
                     self.process_state.money - action.amount,
-                    action,
+                    action.to_message(self.identifier),
                 )
 
         self._print("Finished actions")
@@ -286,8 +288,8 @@ class Process:
                 self._receive_marker(message_from, self.identifier, message_from, message)
             elif message.control_message_type == ControlMessageType.ACK:
                 self._receive_ack(message_from, self.identifier, message_from, message)
-            elif message.control_message_type == ControlMessageType.SNAP_COMPLETED:
-                self._receive_snap_completed(message_from, self.identifier, message_from, message)
+        elif isinstance(message, SnapCompletedMessage):
+            self._receive_snap_completed(message_from, self.identifier, message_from, message)
         elif isinstance(message, ActionMessage): # TODO underlying message type
             self._receive_und(message_from, self.identifier, message_from, message)
         else:
@@ -337,7 +339,7 @@ class Process:
             message
         """
         if self.record[c]:
-            self.state[c].add(m)
+            self.state[c].append(m)
 
         self._handle_message(m, q)
 
@@ -361,9 +363,9 @@ class Process:
             # TODO: It might be better to just run the function here instead of sending a message
             # self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, self.version + 1), q)
             self._receive_initiate(q, r, c, ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, m.version))
-            self.state[c] = set()
+            self.state[c] = []
 
-        self.link_states |= self.state[c]
+        self.link_states[c] = self.state[c]
         self.record[c] = False
 
         # Send an ack on c
@@ -385,20 +387,21 @@ class Process:
         """
 
         if self.version < m.version:
-            self.loc_snap[self.version] = { self.p_state } | self.link_states # TODO: I don't think this makes sense
+            # NOTE: I think this doesn't work. P won't start a new snapshot until the previous one
+            #       is finished, so we can't send this as part of finishing.
+            # self.loc_snap[self.version] = ProcessSnapshot(self.p_state, self.link_states) # { self.p_state } | self.link_states # TODO: I don't think this makes sense
 
-            self.link_states = set()
+            self.link_states = dict()
             self.p_state = self.process_state # TODO: set to current process state (amount of money)
 
             # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
             self.version = m.version
 
             for connection in [ c for c in self.connections if c != self.identifier]:
-                self.state[connection] = set()
+                self.state[connection] = []
                 self.record[connection] = True
 
-            self.parent = r
-            self.completed_snaps = { k: False for k in self.spanning_connections if c not in self.Uq }
+            self.completed_snaps = { k: None for k in self.spanning_connections if k not in self.Uq }
             self.acks = { k: False for k in self.Uq }
 
             # Send init snap on all spanning connections, unless we are going to send a marker
@@ -410,10 +413,10 @@ class Process:
                 # Send marker on connection
                 self._send_message(ControlMessage(self.identifier, ControlMessageType.MARKER, m.version), connection)
 
-            self._print("init", self.acks.values(), self.completed_snaps.values())
+            self._print("init", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
 
             # If there are no messages to receive instantly finish the snapshot
-            if all(self.completed_snaps.values()) and all(self.acks.values()):
+            if self._completed_all_snaps() and all(self.acks.values()):
                 self.finish_initiate(r, q, c, m)
 
 
@@ -423,34 +426,47 @@ class Process:
         else:
             pass # We disgard the init_snap message, already received an init_snap fo this version
 
-    def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+    def _completed_all_snaps(self):
+        return all([ snap is not None for snap in self.completed_snaps.values() ])
+
+    def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: SnapCompletedMessage):
         """Executed when q receives a snap_completed message from it's child."""
 
-        self.completed_snaps[r] = True
+        print("AAAAA", self.completed_snaps.keys(), m.snapshots.keys())
+        self.completed_snaps |= m.snapshots
 
-        self._print("snap_complted", self.acks.values(), self.completed_snaps.values())
+        self._print("snap_complted", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
+        self._print(self.completed_snaps.keys())
+        self._print([ type(a) for a in self.completed_snaps.keys() ])
 
-        if all(self.completed_snaps.values()) and all(self.acks.values()):
+        if self._completed_all_snaps() and all(self.acks.values()):
             self.finish_initiate(r, q, c, m)
 
     def _receive_ack(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         self.acks[r] = True
 
-        self._print("ack", self.acks.values(), self.completed_snaps.values())
+        self._print("ack", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
 
         if all(self.acks.values()):
             self.Uq = set()
 
-            if all(self.completed_snaps.values()):
+            if self._completed_all_snaps():
                 self.finish_initiate(r, q, c, m)
 
     def finish_initiate(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        self.completed_snaps[self.identifier]  = ProcessSnapshot(self.p_state, self.link_states)
+        self.Uq = set()
+
         if self.primary:
-            self._print("FINISHED TODO THIS")
+            self._print("FINISHED TODO THIS", self.completed_snaps)
+
+            with open(f"snapshot_{m.version}.json", "w") as f:
+                f.write(GlobalSnapshot(self.completed_snaps).serialise())
+
             self.active_snapshot = False
-            pass # TODO: Snapshot is complete, save it somehow
+            pass # TODO: ProcessSnapshot is complete, save it somehow
         else:
+
             if self.parent is not None:
                 # Send a snapshot_completed message to parent
-                self._send_message(ControlMessage(self.identifier, ControlMessageType.SNAP_COMPLETED, m.version), self.parent)
-                self.parent = None
+                self._send_message(SnapCompletedMessage(self.identifier, m.version, self.completed_snaps), self.parent)
