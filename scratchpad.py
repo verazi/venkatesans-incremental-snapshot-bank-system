@@ -1,3 +1,4 @@
+import sys
 from threading import Thread
 from time import sleep
 from signal import signal, SIGINT, SIG_DFL
@@ -50,7 +51,11 @@ processes = {
     )
 }
 
+
 config = Config(processes)
+
+print(config.serialise())
+sys.exit(0)
 
 p1 = Process(config, PA('localhost', 10101))
 p2 = Process(config, PA('localhost', 10102))

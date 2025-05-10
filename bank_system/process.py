@@ -143,13 +143,16 @@ class Process:
         # Connect to existing peers
         for peer in self.connections:
             if peer not in self.incoming_sockets:
-                s = socket(AF_INET, SOCK_STREAM)
-                s.connect((peer.address, peer.port))
+                try:
+                    s = socket(AF_INET, SOCK_STREAM)
+                    s.connect((peer.address, peer.port))
 
-                self.outgoing_sockets[peer] = s
+                    self.outgoing_sockets[peer] = s
 
-                s.send(InitialConnectionMessage(self.identifier).serialise().encode(ENCODING))
-                self._print(f"Outgoing connected to {peer.address}:{peer.port}")
+                    s.send(InitialConnectionMessage(self.identifier).serialise().encode(ENCODING))
+                    self._print(f"Outgoing connected to {peer.address}:{peer.port}")
+                except ConnectionRefusedError:
+                    print("test")
 
         # Wait to accept all incoming connections
         accept_loop.join()

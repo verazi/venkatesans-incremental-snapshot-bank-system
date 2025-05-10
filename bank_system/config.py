@@ -86,6 +86,9 @@ class Config:
         """
 
         raw = json.loads(config_string)
+
+        print(raw)
+
         processes: Dict[ProcessAddress, ProcessConfig] = {}
 
         for _, entry in raw["nodes"].items():
