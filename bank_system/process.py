@@ -48,22 +48,56 @@ class Process:
 
     Attributes
     ----------
-    TODO: THIS
+    is_primary : bool
+        Is this process the primary process.
+    identifier: ProcessAddress
+        A unique identifier for this process. Also the address the process will listen on.
+
+    incoming_sockets: dict[ProcessAddress, socket]
+        A list of incoming sockets to read messages from.
+    outgoing_sockets: dict[ProcessAddress, socket]
+        A list of outgoing sockets to send messages to.
+
+    connections: list[ProcessAddress]
+        A list of processes this process will connect to. Includes itself.
+    spanning_connections: list[ProcessAddress]
+        A list of child processes this process is connected to in the spanning tree.
+
+    process_state: State
+        The current state of the proces. The amount of money this process has.
+
+    mutex: Lock
+        A lock on the state of the process.
+    parent: ProcessAddress | None
+        The parent of this process in the spanning tree.
+    is_active_snapshot: bool
+        If this is the primary process, records if a snapshot is currently happening.
 
     # From Venkatesan algorithm
 
-    version : int
+    version: int
         The version of the snapshot that is currently being taken.
-    Uq : list[ProcessAddress]
+    Uq: set[ProcessAddress]
         List of neighbours messages have been sent to since the last snapshot completed.
-    p_state : set[State]
+    p_state: State
         Saved (cached) states of the local process.
-    state : defaultdict[ProcessAddress, set[State]]
+    state: defaultdict[ProcessAddress, list[ActionMessage]]
         The state of the other processes.
-    link_states : set[State] ?
+    link_states: dict[ProcessAddress, list[ActionMessage]]
         Completed channel states for the current snapshot.
-    loc_snap : list[set[State]]
-        the ith global state according to Uq (this process).
+
+    # Our additions
+
+    record: defaultdict[ProcessAddress, bool]
+        If the process is recording messages received on each channel for the snapshot algorithm.
+    completed_snaps: dict[ProcessAddress, ProcessSnapshot|None]
+        Completed snapshots from children to send to the parent process when this process has
+        completed its snapshot.
+    waiting_on_completed: dict[ProcessAddress, bool]
+        The children this process is waiting to finish their snapshots before this process is
+        finished with its own snapshot.
+    waiting_on_ack: dict[ProcessAddress, bool]
+        The channels this process is waiting to send an ack to complete its snapshot.
     """
 
     is_primary: bool
@@ -137,7 +171,6 @@ class Process:
         accept_loop.start()
 
         # Wait a moment to make connections consistant
-        # TODO: Test this with delayed connections
         sleep(0.5)
 
         # Connect to existing peers
