@@ -234,8 +234,13 @@ class Process:
 
             sleep(delay)
 
+            if self.process_state.money <= 0:
+                sleep(2)
+                continue
+
             with self.mutex:
                 amount = min(int(random() * 5), self.process_state.money)
+
                 self.process_state = State(
                     self.process_state.money - amount,
                     None,
@@ -250,30 +255,10 @@ class Process:
                     ActionMessage(self.identifier, amount)
                 )
 
-                # self._send_message(
-                #     message=ActionMessage(self.identifier, amount),
-                #     message_to=
-                # )
-        # for action in self.actions:
-        #     self._print(f"Waiting {action.delay} to send {action.amount} to {action.to}")
-
-        #     sleep(action.delay)
-
-        #     # self._print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
-        #     self._send_message(message=action.to_message(self.identifier), message_to=action.to)
-
-        #     with self.mutex:
-        #         self.process_state = State(
-        #             self.process_state.money - action.amount,
-        #             action.to_message(self.identifier),
-        #         )
-
-        # self._print("Finished actions")
-
     def _snapshot_loop(self):
         while self.primary:
             # Between 4 and 5 seconds
-            sleep(4 + random())
+            sleep(5 + random())
             if not self.active_snapshot:
                 with self.mutex:
                     self.active_snapshot = True
@@ -426,11 +411,14 @@ class Process:
             #       is finished, so we can't send this as part of finishing.
             # self.loc_snap[self.version] = ProcessSnapshot(self.p_state, self.link_states) # { self.p_state } | self.link_states # TODO: I don't think this makes sense
 
+
             self.link_states = dict()
             self.p_state = self.process_state # TODO: set to current process state (amount of money)
 
             # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
             self.version = m.version
+
+            self._save_local_snapshot()
 
             for connection in [ c for c in self.connections if c != self.identifier]:
                 self.state[connection] = []
@@ -524,3 +512,7 @@ class Process:
                     amount += message.amount
 
         self._print(f"FINAL AMOUNT: {amount}")
+
+    def _save_local_snapshot(self):
+        with open(f"local_snapshot_{self.identifier.address}_{self.identifier.port}_{self.version}.json", "w") as f:
+            f.write(json.dumps({"money": self.process_state.money}))
