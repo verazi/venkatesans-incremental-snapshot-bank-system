@@ -461,7 +461,7 @@ class Process:
             # self.loc_snap[self.version] = ProcessSnapshot(self.p_state, self.link_states)
 
             self.link_states = dict()
-            self.p_state = self.process_state # TODO: set to current process state (amount of money)
+            self.p_state = self.process_state
 
             # NOTE: paper uses version + 1 but I think it's safer to copy the message version
             self.version = m.version
@@ -555,8 +555,6 @@ class Process:
         self.Uq = set()
 
         if self.is_primary:
-            self._print("FINISHED TODO THIS", self.completed_snaps)
-
             global_snapshot = GlobalSnapshot(self.completed_snaps)
 
             self._verify_snapshot(global_snapshot)
