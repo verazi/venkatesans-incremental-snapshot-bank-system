@@ -1,19 +1,18 @@
 import json
-from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
+from socket import socket, AF_INET, SOCK_STREAM
 from threading import Thread, Lock
 from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
 from select import select
 from random import random, choice
-from typing import Any
 
 from .snap_completed_message import ProcessSnapshot, SnapCompletedMessage, State
 from .action_message import ActionMessage
 from .message_factory import MessageFactory
 from .initial_connection_message import InitialConnectionMessage
 from .message import Message
-from .config import Config, Action
+from .config import Config
 from .control_message import ControlMessage, ControlMessageType
 from .process_address import ProcessAddress
 
@@ -54,7 +53,7 @@ class Process:
     # From Venkatesan algorithm
 
     version : int
-        The version number of the current snapshot.
+        The version of the snapshot that is currently being taken.
     Uq : list[ProcessAddress]
         List of neighbours messages have been sent to since the last snapshot completed.
     p_state : set[State]
@@ -67,19 +66,20 @@ class Process:
         the ith global state according to Uq (this process).
     """
 
-    primary: bool
+    is_primary: bool
     identifier: ProcessAddress
+
     incoming_sockets: dict[ProcessAddress, socket]
     outgoing_sockets: dict[ProcessAddress, socket]
 
     connections: list[ProcessAddress]
     spanning_connections: list[ProcessAddress]
 
-    actions: list[Action]
     process_state: State
 
     mutex: Lock
     parent: ProcessAddress | None
+    is_active_snapshot: bool
 
     # From Venkatesan algorithm
     version: int
@@ -87,16 +87,16 @@ class Process:
     p_state: State
     state: defaultdict[ProcessAddress, list[ActionMessage]]
     link_states: dict[ProcessAddress, list[ActionMessage]]
-    # loc_snap: dict[int, ProcessSnapshot]
+    # loc_snap: dict[int, ProcessSnapshot] # COMMENTED INTENTIONALLY
 
-    # My additions
+    # Our additions
     record: defaultdict[ProcessAddress, bool]
     completed_snaps: dict[ProcessAddress, ProcessSnapshot|None]
-    waiting_completed: dict[ProcessAddress, bool]
-    acks: dict[ProcessAddress, bool]
-    active_snapshot: bool
+    waiting_on_completed: dict[ProcessAddress, bool]
+    waiting_on_ack: dict[ProcessAddress, bool]
 
     def __init__(self, config: Config, identifier: ProcessAddress):
+        self.is_primary = config.processes[identifier].primary
         self.identifier = identifier
 
         self.incoming_sockets = {}
@@ -105,49 +105,44 @@ class Process:
         # Include self connection
         self.connections = config.processes[identifier].connections + [identifier]
         self.spanning_connections = config.processes[identifier].spanning_connections
-        self.sockets = {}
+
+        self.process_state = State(config.processes[identifier].initial_money)
 
         self.mutex = Lock()
-
-        self.primary = config.processes[identifier].primary
-        self.actions = config.processes[identifier].action_list
-
-        self.process_state = State(config.processes[identifier].initial_money, None)
-
-        # avoid editing simultaneously
-        # self.mutex = Lock()
+        self.parent = config.processes[identifier].parent
+        self.is_active_snapshot = False
 
         self.version = 0
         self.Uq = set(config.processes[identifier].connections)
-        self.p_state = State(config.processes[identifier].initial_money, None)
+        self.p_state = State(config.processes[identifier].initial_money)
         self.state = defaultdict(list)
         self.link_states = dict()
-        # self.loc_snap = dict()
+        # self.loc_snap = dict() # COMMENTED INTENTIONALLY
+
         self.record = defaultdict(lambda: False)
-        self.parent = config.processes[identifier].parent
         self.completed_snaps = dict()
-        self.waiting_completed = dict()
-        self.acks = dict()
-        self.active_snapshot = False
+        self.waiting_on_completed = dict()
+        self.waiting_on_ack = dict()
 
     def start(self):
-        # Listen for peers
+        """Start the process."""
 
+        # Listen for peers
         incoming = socket(AF_INET, SOCK_STREAM)
-        # incoming.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+
         incoming.bind((self.identifier.address, self.identifier.port))
         incoming.listen()
 
         accept_loop = Thread(target=self._accept_loop, args=[incoming])
         accept_loop.start()
 
+        # Wait a moment to make connections consistant
+        # TODO: Test this with delayed connections
         sleep(0.5)
 
         # Connect to existing peers
         for peer in self.connections:
-            # with self.mutex:
             if peer not in self.incoming_sockets:
-                # self._print(f"Attempting {peer}")
                 s = socket(AF_INET, SOCK_STREAM)
                 s.connect((peer.address, peer.port))
 
@@ -156,8 +151,11 @@ class Process:
                 s.send(InitialConnectionMessage(self.identifier).serialise().encode(ENCODING))
                 self._print(f"Outgoing connected to {peer.address}:{peer.port}")
 
+        # Wait to accept all incoming connections
         accept_loop.join()
 
+        # Split sockets into incoming and outgoing. We do this because we need both sides of
+        # the self connection.
         for conn in self.incoming_sockets:
             if conn not in self.outgoing_sockets:
                 self.outgoing_sockets[conn] = self.incoming_sockets[conn]
@@ -170,25 +168,21 @@ class Process:
         action_thread = Thread(target=self._action_loop)
         action_thread.start()
 
-        if self.primary:
+        # Send initial snapshot message to self in another thread if we are the primary process
+        if self.is_primary:
             snapshot_thread = Thread(target=self._snapshot_loop)
             snapshot_thread.start()
 
         # Listen for incoming messages
         while True:
-            ready_sockets, _, _ = select(
-                [ self.incoming_sockets[k] for k in self.incoming_sockets ],
-                [],
-                [],
-            )
+            # Get messages on all threads synchronously
+            # We don't need to do this, but it makes demonstrating dropped messages in flight with
+            # snapshots easier.
+            ready_sockets, _, _ = select([ self.incoming_sockets[k] for k in self.incoming_sockets ], [], [])
 
             for sock in ready_sockets:
-                self._print("\treceived")
-
                 sock: socket
                 data = sock.recv(BUFFER_SIZE)
-
-                self._print("\tread {data}")
 
                 for raw_message in data.split(b"\n"):
                     if len(raw_message) == 0:
@@ -200,12 +194,9 @@ class Process:
                         message_from = message.message_from
                         self._receive_message(message, message_from)
 
-                    self._print("\tdone")
+    def _waiting_for_connections(self) -> set[ProcessAddress]:
+        """The set of processes that haven't conencted to this process yet."""
 
-                    # TODO: introduce a delay here to better demonstrate crashing with messages in flight
-
-
-    def _waiting_for_connections(self):
         with self.mutex:
             connected = set(self.incoming_sockets.keys()) | set(self.outgoing_sockets.keys())
 
@@ -213,10 +204,10 @@ class Process:
 
 
     def _accept_loop(self, incoming: socket):
+        """Listen for connections until all connected processors have connected."""
+
         while len(self._waiting_for_connections()) > 0:
             conn, _ = incoming.accept()
-
-            self._print("ACCEPTED")
             message = conn.recv(BUFFER_SIZE)
 
             # with self.mutex:
@@ -229,6 +220,8 @@ class Process:
 
 
     def _action_loop(self):
+        """Sends a randomised action message approximately every second."""
+
         while True:
             delay = random() * 1.5
 
@@ -241,10 +234,7 @@ class Process:
             with self.mutex:
                 amount = min(int(random() * 5), self.process_state.money)
 
-                self.process_state = State(
-                    self.process_state.money - amount,
-                    None,
-                )
+                self.process_state = State(self.process_state.money - amount)
 
                 to = choice([ conn for conn in self.connections if conn != self.identifier ])
 
@@ -256,14 +246,17 @@ class Process:
                 )
 
     def _snapshot_loop(self):
-        while self.primary:
+        """Runs a snapshot every few seconds if this is the primary process."""
+
+        while self.is_primary:
             # Between 4 and 5 seconds
             sleep(5 + random())
-            if not self.active_snapshot:
-                with self.mutex:
-                    self.active_snapshot = True
 
-                    self._print("Start snapshot?")
+            if not self.is_active_snapshot:
+                with self.mutex:
+
+                    self.is_active_snapshot = True
+                    self._print("Start snapshot")
 
                     self._send_message(
                         ControlMessage(
@@ -274,10 +267,16 @@ class Process:
                         self.identifier
                     )
 
-    def _print(self, *args):
-        print(f"[{self.identifier}] ", *args)
-
     def _send_message(self, message: Message, message_to: ProcessAddress):
+        """Send a message to anther process.
+
+        Attributes
+        ----------
+        message : Message
+            The message to send.
+        message_to : ProcessAddress
+            The process to send the message to.
+        """
         self._print(f"Sending message type:{message.MESSAGE_TYPE} to:{message_to}")
 
         sock: socket
@@ -289,7 +288,15 @@ class Process:
         self._print("\tSent!")
 
     def _receive_message(self, message: Message, message_from: ProcessAddress) -> bool:
-        """Handles received a message from any other process."""
+        """Handles receiving a message from another process.
+
+        Attributes
+        ----------
+        message : ActionMessage
+            The message being received.
+        message_from : ProcessAddress
+            The process that sent the message.
+        """
         self._print(f"Received message type:{message.MESSAGE_TYPE} from:{message.message_from}")
 
         if isinstance(message, ControlMessage):
@@ -309,24 +316,29 @@ class Process:
             sleep(random() * 2)
 
             self._receive_snap_completed(message_from, self.identifier, message_from, message)
-        elif isinstance(message, ActionMessage): # TODO underlying message type
+        elif isinstance(message, ActionMessage):
             self._receive_und(message_from, self.identifier, message_from, message)
         else:
-            self._print("NOT MESSAGE TYPE")
+            raise Exception("Message type not recognised.")
 
-    def _handle_message(self, message: Message, message_from: ProcessAddress):
-        """Handle the logic for receiving an underlying message."""
+    def _handle_message(self, message: ActionMessage, message_from: ProcessAddress):
+        """Handle the logic for receiving an underlying message.
+
+        Attributes
+        ----------
+        message : ActionMessage
+            The action message being received.
+        message_from : ProcessAddress
+            The process that sent the message.
+        """
         self._print("Handling underlying message")
 
-        self.process_state = State(
-            self.process_state.money + message.amount,
-            self.process_state.last_action,
-        )
+        self.process_state = State(self.process_state.money + message.amount)
 
     # From Venkatesan algorithm
 
     def _send_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
-        """Executed when q sends a primary message to r.
+        """Executed when q sends a is_primary message to r.
 
         Attributes
         ----------
@@ -344,7 +356,7 @@ class Process:
         self._send_message(m, r)
 
     def _receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
-        """Executed when a primary message is received.
+        """Executed when a is_primary message is received.
 
         Attributes
         ----------
@@ -379,8 +391,8 @@ class Process:
 
         if self.version < m.version:
             # Send init_snap(self.version+1) to self (q)
-            # TODO: It might be better to just run the function here instead of sending a message
-            # self._send_message(ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, self.version + 1), q)
+            # NOTE: Doing this as a function call instead of sending the message to self so it
+            # doesn't have to wait for other message to be received.
             self._receive_initiate(q, r, c, ControlMessage(self.identifier, ControlMessageType.INIT_SNAP, m.version))
             self.state[c] = []
 
@@ -409,13 +421,13 @@ class Process:
 
             # NOTE: I think this doesn't work. P won't start a new snapshot until the previous one
             #       is finished, so we can't send this as part of finishing.
-            # self.loc_snap[self.version] = ProcessSnapshot(self.p_state, self.link_states) # { self.p_state } | self.link_states # TODO: I don't think this makes sense
-
+            # COMMENTED INTENTIONALLY
+            # self.loc_snap[self.version] = ProcessSnapshot(self.p_state, self.link_states)
 
             self.link_states = dict()
             self.p_state = self.process_state # TODO: set to current process state (amount of money)
 
-            # NOTE: algorithm uses version + 1 but I think it's safer to copy the message version
+            # NOTE: paper uses version + 1 but I think it's safer to copy the message version
             self.version = m.version
 
             self._save_local_snapshot()
@@ -424,9 +436,9 @@ class Process:
                 self.state[connection] = []
                 self.record[connection] = True
 
-            self.waiting_completed = {k: False for k in self.spanning_connections}
+            self.waiting_on_completed = {k: False for k in self.spanning_connections}
             self.completed_snaps = { k: None for k in self.spanning_connections if k not in self.Uq }
-            self.acks = { k: False for k in self.Uq }
+            self.waiting_on_ack = { k: False for k in self.Uq }
 
             # Send init snap on all spanning connections, unless we are going to send a marker
             for connection in [ c for c in self.spanning_connections if c not in self.Uq]:
@@ -437,49 +449,76 @@ class Process:
                 # Send marker on connection
                 self._send_message(ControlMessage(self.identifier, ControlMessageType.MARKER, m.version), connection)
 
-            self._print("init", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
+            self._print("init", self.waiting_on_ack.values(), [ a is not None for a in self.completed_snaps.values() ])
 
             # If there are no messages to receive instantly finish the snapshot
-            if all(self.waiting_completed.values()) and all(self.acks.values()):
-                self._finish_initiate(r, q, c, m)
+            if all(self.waiting_on_completed.values()) and all(self.waiting_on_ack.values()):
+                self._finish_snapshot(r, q, c, m)
 
 
             # Wait for an ack on each Uq
             # Wait for a snap_completed message on each child
 
         else:
-            pass # We disgard the init_snap message, already received an init_snap fo this version
+            # We disgard the init_snap message, already received an init_snap fo this version
+            pass
 
     def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: SnapCompletedMessage):
-        """Executed when q receives a snap_completed message from it's child."""
+        """Executed when q receives a snap_completed message from it's child.
+
+        Attributes
+        ----------
+        r : ProcessAddress
+            child
+        q : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : ControlMessage
+            message
+        """
 
         print("AAAAA", self.completed_snaps.keys(), m.snapshots.keys())
         self.completed_snaps |= m.snapshots
-        self.waiting_completed[r] = True
+        self.waiting_on_completed[r] = True
 
-        self._print("snap_complted", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
+        self._print("snap_complted", self.waiting_on_ack.values(), [ a is not None for a in self.completed_snaps.values() ])
         self._print(self.completed_snaps.keys())
         self._print([ type(a) for a in self.completed_snaps.keys() ])
 
-        if all(self.waiting_completed.values()) and all(self.acks.values()):
-            self._finish_initiate(r, q, c, m)
+        if all(self.waiting_on_completed.values()) and all(self.waiting_on_ack.values()):
+            self._finish_snapshot(r, q, c, m)
 
     def _receive_ack(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
-        self.acks[r] = True
+        self.waiting_on_ack[r] = True
 
-        self._print("ack", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
+        self._print("ack", self.waiting_on_ack.values(), [ a is not None for a in self.completed_snaps.values() ])
 
-        if all(self.acks.values()):
+        if all(self.waiting_on_ack.values()):
             self.Uq = set()
 
-            if all(self.waiting_completed.values()):
-                self._finish_initiate(r, q, c, m)
+            if all(self.waiting_on_completed.values()):
+                self._finish_snapshot(r, q, c, m)
 
-    def _finish_initiate(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+    def _finish_snapshot(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+        """Executed after all ack and snap_completed messages have been received.
+
+        Attributes
+        ----------
+        r : ProcessAddress
+            child
+        q : ProcessAddress
+            destination
+        c : ProcessAddress
+            channel
+        m : ControlMessage
+            message
+        """
+
         self.completed_snaps[self.identifier]  = ProcessSnapshot(self.p_state, self.link_states)
         self.Uq = set()
 
-        if self.primary:
+        if self.is_primary:
             self._print("FINISHED TODO THIS", self.completed_snaps)
 
             global_snapshot = GlobalSnapshot(self.completed_snaps)
@@ -489,9 +528,9 @@ class Process:
             with open(f"snapshot_{m.version}.json", "w") as f:
                 f.write(global_snapshot.serialise())
 
-            self.active_snapshot = False
+            self.is_active_snapshot = False
 
-            self._print("FINISHED!!!")
+            self._print("FINISHED")
         else:
 
             if self.parent is not None:
@@ -499,6 +538,14 @@ class Process:
                 self._send_message(SnapCompletedMessage(self.identifier, m.version, self.completed_snaps), self.parent)
 
     def _verify_snapshot(self, snapshot: GlobalSnapshot):
+        """Sum up the total amount of money in the system in a global snapshot.
+
+        Attributes
+        ----------
+        snapshot : GlobalSnapshot
+            A snapshot of the whole system.
+        """
+
         amount = 0
         for process in snapshot.snapshots:
             process_snapshot = snapshot.snapshots[process]
@@ -514,5 +561,16 @@ class Process:
         self._print(f"FINAL AMOUNT: {amount}")
 
     def _save_local_snapshot(self):
+        """Save a local snapshot of the current state of the process."""
         with open(f"local_snapshot_{self.identifier.address}_{self.identifier.port}_{self.version}.json", "w") as f:
             f.write(json.dumps({"money": self.process_state.money}))
+
+    def _print(self, *args):
+        """Print a message with a prefix showing the process's identifier.
+
+        Attributes
+        ----------
+        *args : Any
+            Arguments passed to print.
+        """
+        print(f"[{self.identifier}] ", *args)

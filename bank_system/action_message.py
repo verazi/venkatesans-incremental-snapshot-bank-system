@@ -4,7 +4,13 @@ from .message import Message
 from .process_address import ProcessAddress
 
 class ActionMessage(Message):
-    """A control message sent as part of taking a snapshot."""
+    """A message sending money to another process.
+
+    Attributes
+    ----------
+    amount : int
+        The amount of money being sent.
+    """
 
     MESSAGE_TYPE = "action"
 

@@ -2,42 +2,7 @@ from dataclasses import dataclass
 from typing import Dict
 import json
 
-from .action_message import ActionMessage
 from .process_address import ProcessAddress
-
-@dataclass(eq=True, frozen=True)
-class Action:
-    """An action to take in the system
-
-    Attributes
-    ----------
-    to : ProcessAddress
-        The process to send money to.
-    amount : float
-        The amount of money to send.
-    delay : int
-        The time to wait after doing the action before doing the next action.
-    """
-
-    to: ProcessAddress
-    amount: float
-    delay: int
-
-    def serialise(self) -> str:
-        return json.dumps({
-            "type": "action",
-            "to": {"address": self.to.address, "port": self.to.port},
-            "amount": self.amount
-        })
-
-    @classmethod
-    def deserialise(cls, message_string: str):
-        obj = json.loads(message_string)
-        addr = ProcessAddress(obj["to"]["address"], obj["to"]["port"])
-        return cls(to=addr, amount=obj["amount"], delay=0)
-
-    def to_message(self, message_from: ProcessAddress) -> ActionMessage:
-        return ActionMessage(message_from, self.amount)
 
 @dataclass
 class ProcessConfig:
@@ -52,10 +17,13 @@ class ProcessConfig:
     connections : list[ProcessAddress]
         A list of all direct connections to this process. If a process appears in the list this
         process must also appear in the connections list for that process.
+    spanning_connections : list[ProcessAddress]
+        A list of connections that form a spanning tree.
+    parent: ProcessAddress | None
+        The parent of the process. Following this until the parent is None will take a message to
+        the primary process.
     initial_money : float
         The amount of money this process starts with.
-    action_list : list[Action]
-        A list of actions to take in the system.
     """
 
     address: ProcessAddress
@@ -64,7 +32,6 @@ class ProcessConfig:
     spanning_connections: list[ProcessAddress]
     parent: ProcessAddress | None
     initial_money: float
-    action_list: list[Action]
 
 
 class Config:
@@ -101,13 +68,13 @@ class Config:
                     {"address": c.address, "port": c.port} for c in pconfig.spanning_connections
                 ],
                 "parent": parent,
-                "action_list": [
-                    {
-                        "to": {"address": a.to.address, "port": a.to.port},
-                        "amount": a.amount,
-                        "delay": a.delay
-                    } for a in pconfig.action_list
-                ]
+                # "action_list": [
+                #     {
+                #         "to": {"address": a.to.address, "port": a.to.port},
+                #         "amount": a.amount,
+                #         "delay": a.delay
+                #     } for a in pconfig.action_list
+                # ]
             }
 
         return json.dumps(result)
@@ -137,13 +104,13 @@ class Config:
             else:
                 parent = None
 
-            actions = [
-                Action(
-                    to=ProcessAddress(a["to"]["address"], a["to"]["port"]),
-                    amount=a["amount"],
-                    delay=a["delay"]
-                ) for a in entry["action_list"]
-            ]
+            # actions = [
+            #     Action(
+            #         to=ProcessAddress(a["to"]["address"], a["to"]["port"]),
+            #         amount=a["amount"],
+            #         delay=a["delay"]
+            #     ) for a in entry["action_list"]
+            # ]
 
             proc_config = ProcessConfig(
                 address=addr,
@@ -152,7 +119,7 @@ class Config:
                 spanning_connections=spanning_connections,
                 parent=parent,
                 initial_money=entry["initial_money"],
-                action_list=actions
+                # action_list=actions
             )
 
             processes[addr] = proc_config

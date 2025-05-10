@@ -1,9 +1,7 @@
 from dataclasses import dataclass
-from enum import Enum
 import json
 
 from bank_system.action_message import ActionMessage
-from bank_system.config import Action
 
 from .message import Message
 from .process_address import ProcessAddress
@@ -17,28 +15,29 @@ class State:
     ----------
     money : int
         The amount of money the process has available.
-    last_action : Action | None
-        The next action to be performed.
     """
 
     money: int
-    last_action: ActionMessage | None
 
 
 
 @dataclass(eq=True, frozen=True)
 class ProcessSnapshot:
-    """A single snapshot."""
+    """A single snapshot.
+
+    Attributes
+    ----------
+    state : State
+        The state of the process at the time of the snapshot.
+    connection_states : dict[ProcessAddress, list[ActionMessage]]
+        Any messages sent to the process after the state was taken, but before the sending process
+        took a snapshot.
+    """
 
     state: State
     connection_states: dict[ProcessAddress, list[ActionMessage]]
 
     def serialise(self) -> str:
-        if self.state.last_action is not None:
-            last_action = json.loads(self.state.last_action.serialise())
-        else:
-            last_action = None
-
         connection_states = {}
 
         for process in self.connection_states:
@@ -49,7 +48,6 @@ class ProcessSnapshot:
         return json.dumps({
             "state": {
                 "money": self.state.money,
-                "last_action": last_action,
             },
             "connection_states": connection_states,
         })
@@ -58,11 +56,6 @@ class ProcessSnapshot:
     def deserialise(cls, message_string: str):
 
         raw = json.loads(message_string)
-
-        if raw["state"]["last_action"] is not None:
-            last_action = ActionMessage.deserialise(json.dumps(raw["state"]["last_action"]))
-        else:
-            last_action = None
 
         connection_states = {}
 
@@ -74,12 +67,22 @@ class ProcessSnapshot:
             connection_states[key] = { ActionMessage.deserialise(json.dumps(m)) for m in raw["connection_states"][process] }
 
         return cls(
-            State(raw["state"]["money"], last_action),
+            State(raw["state"]["money"]),
             connection_states
         )
 
 class SnapCompletedMessage(Message):
-    """A control message sent as part of taking a snapshot."""
+    """A control message sent as part of taking a snapshot when a process has compelted a snapshot.
+
+    Attributes
+    ----------
+    version : int
+        The version of the snapshot that is currently being taken.
+    snapshots : dict[ProcessAddress, ProcessSnapshot]
+        Any snapshots of processes from further "down" the spanning tree that are being sent to
+        the primary process through the tree.
+
+    """
 
     MESSAGE_TYPE = "completed"
 

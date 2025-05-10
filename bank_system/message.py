@@ -7,7 +7,13 @@ from .process_address import ProcessAddress
 
 
 class Message(ABC):
-    """An abstract method that can be sent to and from a process."""
+    """An abstract method that can be sent to and from a process.
+
+    Attributes
+    ----------
+    message_from : ProcessAddress
+        The process that sent the message.
+    """
 
     message_from: ProcessAddress
 

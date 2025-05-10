@@ -5,7 +5,7 @@ from .message import Message
 from .process_address import ProcessAddress
 
 class InitialConnectionMessage(Message):
-    """A control message sent as part of taking a snapshot."""
+    """A message sent just after connecting to another process to send the ProcessAddress of the process."""
 
     MESSAGE_TYPE = "initial_connection"
 
@@ -22,6 +22,7 @@ class InitialConnectionMessage(Message):
                 "port": self.message_from.port,
             }
         })
+
     @classmethod
     def deserialise(cls, message_string: str):
         """Deserialise a json string into a `ControlMessage` object."""

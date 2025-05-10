@@ -1,5 +1,4 @@
 import json
-from time import sleep
 
 from .snap_completed_message import SnapCompletedMessage
 from .action_message import ActionMessage

@@ -9,10 +9,17 @@ class ControlMessageType(Enum):
     MARKER = 1
     ACK = 2
 
-
-
 class ControlMessage(Message):
-    """A control message sent as part of taking a snapshot."""
+    """A control message sent as part of taking a snapshot.
+
+    Attributes
+    ----------
+    control_message_type : ControlMessageType
+        Which control message type this is.
+    version : int
+        The version of the snapshot that is currently being taken.
+
+    """
 
     MESSAGE_TYPE = "control"
 
