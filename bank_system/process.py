@@ -5,7 +5,7 @@ from time import sleep
 from collections import defaultdict
 from dataclasses import dataclass
 from select import select
-from random import random
+from random import random, choice
 from typing import Any
 
 from .snap_completed_message import ProcessSnapshot, SnapCompletedMessage, State
@@ -83,7 +83,7 @@ class Process:
 
     # From Venkatesan algorithm
     version: int
-    Uq: list[ProcessAddress]
+    Uq: set[ProcessAddress]
     p_state: State
     state: defaultdict[ProcessAddress, list[ActionMessage]]
     link_states: dict[ProcessAddress, list[ActionMessage]]
@@ -92,6 +92,7 @@ class Process:
     # My additions
     record: defaultdict[ProcessAddress, bool]
     completed_snaps: dict[ProcessAddress, ProcessSnapshot|None]
+    waiting_completed: dict[ProcessAddress, bool]
     acks: dict[ProcessAddress, bool]
     active_snapshot: bool
 
@@ -117,7 +118,7 @@ class Process:
         # self.mutex = Lock()
 
         self.version = 0
-        self.Uq = config.processes[identifier].connections
+        self.Uq = set(config.processes[identifier].connections)
         self.p_state = State(config.processes[identifier].initial_money, None)
         self.state = defaultdict(list)
         self.link_states = dict()
@@ -125,6 +126,7 @@ class Process:
         self.record = defaultdict(lambda: False)
         self.parent = config.processes[identifier].parent
         self.completed_snaps = dict()
+        self.waiting_completed = dict()
         self.acks = dict()
         self.active_snapshot = False
 
@@ -194,9 +196,9 @@ class Process:
 
                     message = MessageFactory.deserialise(raw_message)
 
-                    # with self.mutex:
-                    message_from = message.message_from
-                    self._receive_message(message, message_from)
+                    with self.mutex:
+                        message_from = message.message_from
+                        self._receive_message(message, message_from)
 
                     self._print("\tdone")
 
@@ -227,21 +229,46 @@ class Process:
 
 
     def _action_loop(self):
-        for action in self.actions:
-            self._print(f"Waiting {action.delay} to send {action.amount} to {action.to}")
+        while True:
+            delay = random() * 1.5
 
-            sleep(action.delay)
-
-            # self._print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
-            self._send_message(message=action.to_message(self.identifier), message_to=action.to)
+            sleep(delay)
 
             with self.mutex:
+                amount = min(int(random() * 5), self.process_state.money)
                 self.process_state = State(
-                    self.process_state.money - action.amount,
-                    action.to_message(self.identifier),
+                    self.process_state.money - amount,
+                    None,
                 )
 
-        self._print("Finished actions")
+                to = choice([ conn for conn in self.connections if conn != self.identifier ])
+
+                self._send_und(
+                    self.identifier,
+                    to,
+                    to,
+                    ActionMessage(self.identifier, amount)
+                )
+
+                # self._send_message(
+                #     message=ActionMessage(self.identifier, amount),
+                #     message_to=
+                # )
+        # for action in self.actions:
+        #     self._print(f"Waiting {action.delay} to send {action.amount} to {action.to}")
+
+        #     sleep(action.delay)
+
+        #     # self._print(f"Action message {action.amount} to {action.to.address}:{action.to.port}")
+        #     self._send_message(message=action.to_message(self.identifier), message_to=action.to)
+
+        #     with self.mutex:
+        #         self.process_state = State(
+        #             self.process_state.money - action.amount,
+        #             action.to_message(self.identifier),
+        #         )
+
+        # self._print("Finished actions")
 
     def _snapshot_loop(self):
         while self.primary:
@@ -282,6 +309,10 @@ class Process:
 
         if isinstance(message, ControlMessage):
             self._print(f"\t{message.control_message_type}")
+
+            # NOTE: Delay a random amount to allow time for messages to be sent for demonstration purposes
+            sleep(random() * 2)
+
             if message.control_message_type == ControlMessageType.INIT_SNAP:
                 self._receive_initiate(self.identifier, message_from, message_from, message)
             elif message.control_message_type == ControlMessageType.MARKER:
@@ -289,6 +320,9 @@ class Process:
             elif message.control_message_type == ControlMessageType.ACK:
                 self._receive_ack(message_from, self.identifier, message_from, message)
         elif isinstance(message, SnapCompletedMessage):
+            # NOTE: Delay a random amount to allow time for messages to be sent for demonstration purposes
+            sleep(random() * 2)
+
             self._receive_snap_completed(message_from, self.identifier, message_from, message)
         elif isinstance(message, ActionMessage): # TODO underlying message type
             self._receive_und(message_from, self.identifier, message_from, message)
@@ -321,8 +355,8 @@ class Process:
             message
         """
 
-        self.Uq += c
-        self._send_message(m, q)
+        self.Uq.add(c)
+        self._send_message(m, r)
 
     def _receive_und(self, q: ProcessAddress, r: ProcessAddress, c: ProcessAddress, m: Message):
         """Executed when a primary message is received.
@@ -387,6 +421,7 @@ class Process:
         """
 
         if self.version < m.version:
+
             # NOTE: I think this doesn't work. P won't start a new snapshot until the previous one
             #       is finished, so we can't send this as part of finishing.
             # self.loc_snap[self.version] = ProcessSnapshot(self.p_state, self.link_states) # { self.p_state } | self.link_states # TODO: I don't think this makes sense
@@ -401,6 +436,7 @@ class Process:
                 self.state[connection] = []
                 self.record[connection] = True
 
+            self.waiting_completed = {k: False for k in self.spanning_connections}
             self.completed_snaps = { k: None for k in self.spanning_connections if k not in self.Uq }
             self.acks = { k: False for k in self.Uq }
 
@@ -416,8 +452,8 @@ class Process:
             self._print("init", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
 
             # If there are no messages to receive instantly finish the snapshot
-            if self._completed_all_snaps() and all(self.acks.values()):
-                self.finish_initiate(r, q, c, m)
+            if all(self.waiting_completed.values()) and all(self.acks.values()):
+                self._finish_initiate(r, q, c, m)
 
 
             # Wait for an ack on each Uq
@@ -426,21 +462,19 @@ class Process:
         else:
             pass # We disgard the init_snap message, already received an init_snap fo this version
 
-    def _completed_all_snaps(self):
-        return all([ snap is not None for snap in self.completed_snaps.values() ])
-
     def _receive_snap_completed(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: SnapCompletedMessage):
         """Executed when q receives a snap_completed message from it's child."""
 
         print("AAAAA", self.completed_snaps.keys(), m.snapshots.keys())
         self.completed_snaps |= m.snapshots
+        self.waiting_completed[r] = True
 
         self._print("snap_complted", self.acks.values(), [ a is not None for a in self.completed_snaps.values() ])
         self._print(self.completed_snaps.keys())
         self._print([ type(a) for a in self.completed_snaps.keys() ])
 
-        if self._completed_all_snaps() and all(self.acks.values()):
-            self.finish_initiate(r, q, c, m)
+        if all(self.waiting_completed.values()) and all(self.acks.values()):
+            self._finish_initiate(r, q, c, m)
 
     def _receive_ack(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         self.acks[r] = True
@@ -450,23 +484,43 @@ class Process:
         if all(self.acks.values()):
             self.Uq = set()
 
-            if self._completed_all_snaps():
-                self.finish_initiate(r, q, c, m)
+            if all(self.waiting_completed.values()):
+                self._finish_initiate(r, q, c, m)
 
-    def finish_initiate(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
+    def _finish_initiate(self, r: ProcessAddress, q: ProcessAddress, c: ProcessAddress, m: ControlMessage):
         self.completed_snaps[self.identifier]  = ProcessSnapshot(self.p_state, self.link_states)
         self.Uq = set()
 
         if self.primary:
             self._print("FINISHED TODO THIS", self.completed_snaps)
 
+            global_snapshot = GlobalSnapshot(self.completed_snaps)
+
+            self._verify_snapshot(global_snapshot)
+
             with open(f"snapshot_{m.version}.json", "w") as f:
-                f.write(GlobalSnapshot(self.completed_snaps).serialise())
+                f.write(global_snapshot.serialise())
 
             self.active_snapshot = False
-            pass # TODO: ProcessSnapshot is complete, save it somehow
+
+            self._print("FINISHED!!!")
         else:
 
             if self.parent is not None:
                 # Send a snapshot_completed message to parent
                 self._send_message(SnapCompletedMessage(self.identifier, m.version, self.completed_snaps), self.parent)
+
+    def _verify_snapshot(self, snapshot: GlobalSnapshot):
+        amount = 0
+        for process in snapshot.snapshots:
+            process_snapshot = snapshot.snapshots[process]
+
+            amount += process_snapshot.state.money
+
+            for conn in process_snapshot.connection_states:
+                messages = process_snapshot.connection_states[conn]
+
+                for message in messages:
+                    amount += message.amount
+
+        self._print(f"FINAL AMOUNT: {amount}")
