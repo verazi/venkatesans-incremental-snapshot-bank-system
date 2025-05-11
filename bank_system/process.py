@@ -35,11 +35,11 @@ class GlobalSnapshot:
 
         snapshots = {}
 
-        for process in raw["snapshots"]:
+        for process in raw:
             key_parts = process.split(":")
             key = ProcessAddress(key_parts[0], int(key_parts[1]))
 
-            snapshots[key] = ProcessSnapshot.deserialise(json.dumps(raw["snapshots"][process]))
+            snapshots[key] = ProcessSnapshot.deserialise(json.dumps(raw[process]))
 
         return cls(snapshots=snapshots)
 
@@ -129,7 +129,7 @@ class Process:
     waiting_on_completed: dict[ProcessAddress, bool]
     waiting_on_ack: dict[ProcessAddress, bool]
 
-    def __init__(self, config: Config, identifier: ProcessAddress):
+    def __init__(self, config: Config, identifier: ProcessAddress, global_snapshot: GlobalSnapshot | None = None):
         self.is_primary = config.processes[identifier].primary
         self.identifier = identifier
 
@@ -140,7 +140,10 @@ class Process:
         self.connections = config.processes[identifier].connections + [identifier]
         self.spanning_connections = config.processes[identifier].spanning_connections
 
-        self.process_state = State(config.processes[identifier].initial_money)
+        if global_snapshot is None:
+            self.process_state = State(config.processes[identifier].initial_money)
+        else:
+            self.process_state = global_snapshot.snapshots[self.identifier].state
 
         self.mutex = Lock()
         self.parent = config.processes[identifier].parent
@@ -157,6 +160,17 @@ class Process:
         self.completed_snaps = dict()
         self.waiting_on_completed = dict()
         self.waiting_on_ack = dict()
+
+        if global_snapshot is not None:
+            messages: list[ActionMessage] = []
+
+            for connection_state in global_snapshot.snapshots[self.identifier].connection_states:
+                pending_messages = global_snapshot.snapshots[self.identifier].connection_states[connection_state]
+                for message in pending_messages:
+                    messages.append(message)
+
+            for message in messages:
+                self._receive_message(message, message.message_from)
 
     def start(self):
         """Start the process."""
@@ -185,7 +199,7 @@ class Process:
                     s.send(InitialConnectionMessage(self.identifier).serialise().encode(ENCODING))
                     self._print(f"Outgoing connected to {peer.address}:{peer.port}")
                 except ConnectionRefusedError:
-                    print("test")
+                    pass
 
         # Wait to accept all incoming connections
         accept_loop.join()
@@ -514,7 +528,6 @@ class Process:
             message
         """
 
-        print("AAAAA", self.completed_snaps.keys(), m.snapshots.keys())
         self.completed_snaps |= m.snapshots
         self.waiting_on_completed[r] = True
 
