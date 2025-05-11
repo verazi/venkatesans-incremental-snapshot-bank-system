@@ -2,8 +2,9 @@ import socket
 import threading
 import time
 import unittest
-from bank_system.config import ProcessAddress, Action, ProcessConfig, Config
+from bank_system.config import Action, ProcessConfig, Config
 from bank_system.process import Process
+from .process_address import ProcessAddress
 
 def load_dummy_config():
     addr1 = ProcessAddress("127.0.0.1", 5001)
