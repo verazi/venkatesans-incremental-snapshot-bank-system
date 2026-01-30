@@ -1,0 +1,99 @@
+{
+    "nodes": {
+      "localhost:10101": {
+        "address": "localhost",
+        "port": 10101,
+        "primary": true,
+        "initial_money": 100,
+        "connections": [
+          {
+            "address": "localhost",
+            "port": 10102
+          },
+          {
+            "address": "localhost",
+            "port": 10103
+          }
+        ],
+        "spanning_connections": [
+          {
+            "address": "localhost",
+            "port": 10102
+          },
+          {
+            "address": "localhost",
+            "port": 10103
+          }
+        ],
+        "parent": null
+      },
+      "localhost:10102": {
+        "address": "localhost",
+        "port": 10102,
+        "primary": false,
+        "initial_money": 200,
+        "connections": [
+          {
+            "address": "localhost",
+            "port": 10103
+          },
+          {
+            "address": "localhost",
+            "port": 10101
+          }
+        ],
+        "spanning_connections": [],
+        "parent": {
+          "address": "localhost",
+          "port": 10101
+        }
+      },
+      "localhost:10103": {
+        "address": "localhost",
+        "port": 10103,
+        "primary": false,
+        "initial_money": 300,
+        "connections": [
+          {
+            "address": "localhost",
+            "port": 10101
+          },
+          {
+            "address": "localhost",
+            "port": 10102
+          },
+          {
+            "address": "localhost",
+            "port": 10104
+          }
+        ],
+        "spanning_connections": [
+          {
+            "address": "localhost",
+            "port": 10104
+          }
+        ],
+        "parent": {
+          "address": "localhost",
+          "port": 10101
+        }
+      },
+      "localhost:10104": {
+        "address": "localhost",
+        "port": 10104,
+        "primary": false,
+        "initial_money": 500,
+        "connections": [
+          {
+            "address": "localhost",
+            "port": 10103
+          }
+        ],
+        "spanning_connections": [],
+        "parent": {
+          "address": "localhost",
+          "port": 10103
+        }
+      }
+    }
+  }
